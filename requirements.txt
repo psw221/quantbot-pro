@@ -1,0 +1,7 @@
+pydantic>=2,<3
+pydantic-settings>=2,<3
+PyYAML>=6,<7
+requests>=2.31,<3
+SQLAlchemy>=2.0,<3
+python-dotenv>=1,<2
+pytest>=8,<9

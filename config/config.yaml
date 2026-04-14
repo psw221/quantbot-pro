@@ -1,0 +1,37 @@
+env: vts
+
+database:
+  path: data/quantbot.db
+  busy_timeout_ms: 5000
+
+logging:
+  level: INFO
+  directory: logs
+
+kis:
+  app_key_env: KIS_APP_KEY
+  app_secret_env: KIS_APP_SECRET
+  account_no_env: KIS_ACCOUNT_NO
+  product_code_env: KIS_PRODUCT_CODE
+  token_refresh_hour_kst: 8
+  rate_limit_per_sec: 20
+  request_timeout_sec: 10
+  environments:
+    vts:
+      rest_base_url: https://openapivts.koreainvestment.com:29443
+      websocket_base_url: ws://ops.koreainvestment.com:31000
+      token_path: /oauth2/tokenP
+    prod:
+      rest_base_url: https://openapi.koreainvestment.com:9443
+      websocket_base_url: ws://ops.koreainvestment.com:21000
+      token_path: /oauth2/tokenP
+
+rebalancing:
+  broker_poll_interval_min: 10
+
+risk:
+  stop_loss_domestic: -0.07
+  stop_loss_overseas: -0.05
+  trailing_stop: -0.10
+  daily_max_loss: -0.02
+  max_drawdown_limit: -0.15
