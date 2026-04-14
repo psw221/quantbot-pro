@@ -78,7 +78,9 @@ quantbot-pro/
 ├── requirements.txt
 ├── docs/
 │   ├── PRD_v1.4.md
-│   └── DB_SCHEMA_v1.2.md
+│   ├── DB_SCHEMA_v1.2.md
+│   └── plans/
+│       └── phase2_execution_plan.md
 ├── config/
 │   ├── config.yaml
 │   └── .env
@@ -481,6 +483,7 @@ python scripts/validate_config.py
 
 - 제품 요구사항: `docs/PRD_v1.4.md`
 - DB 설계: `docs/DB_SCHEMA_v1.2.md`
+- Phase 2 실행 계획: `docs/plans/phase2_execution_plan.md`
 - 설정 파일: `config/config.yaml`
 - 민감 정보: `config/.env`
 
@@ -492,6 +495,10 @@ read these documents first:
 
 - `docs/PRD_v1.4.md`
 - `docs/DB_SCHEMA_v1.2.md`
+
+When the task is part of an ongoing staged implementation plan, also check:
+
+- `docs/plans/phase2_execution_plan.md`
 
 Follow these rules:
 - Treat `AGENTS.md` as the always-on repository rulebook.
@@ -509,6 +516,7 @@ update the relevant documentation in the same task.
 Documentation update rules:
 - Update `docs/PRD_v1.4.md` when product behavior, operational rules, priorities, or phase scope changes.
 - Update `docs/DB_SCHEMA_v1.2.md` when tables, fields, indexes, state relationships, settlement FX fields, or SQLite architecture rules change.
+- Update `docs/plans/phase2_execution_plan.md` when Phase 2 task status, recommended next step, verification scope, or execution notes change.
 - Update `AGENTS.md` when repository-wide implementation rules, coding constraints, workflow rules, or document reference/update policies change.
 - If a change affects code but does not require a doc update, explicitly state why no documentation change is needed.
 - Do not leave schema, state-transition, or operational behavior changes undocumented.

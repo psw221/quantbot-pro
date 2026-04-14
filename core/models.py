@@ -50,6 +50,18 @@ class ReconciliationMismatchType(str, Enum):
 
 
 @dataclass(slots=True)
+class BrokerOrderSnapshot:
+    order_no: str
+    ticker: str
+    market: MarketCode
+    side: OrderSide
+    quantity: int
+    remaining_quantity: int
+    status: str
+    price: float | None = None
+
+
+@dataclass(slots=True)
 class Signal:
     ticker: str
     market: MarketCode
@@ -156,3 +168,11 @@ class ReconciliationResult:
     mismatches: list[ReconciliationMismatch] = field(default_factory=list)
     missing_fills: list[ExecutionFill] = field(default_factory=list)
     summary: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class BrokerPollingSnapshot:
+    positions: list[BrokerPositionSnapshot]
+    open_orders: list[BrokerOrderSnapshot]
+    cash_available: float
+    raw_payloads: dict[str, Any] = field(default_factory=dict)

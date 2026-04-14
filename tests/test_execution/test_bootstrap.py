@@ -164,3 +164,18 @@ def test_kis_client_uses_expected_base_url_and_headers(tmp_path: Path) -> None:
     assert call["url"] == "https://example.test:29443/hello"
     assert call["headers"]["authorization"] == "Bearer abc"
     assert call["headers"]["appkey"] == "key12345"
+
+
+def test_kis_client_builds_polling_snapshot(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    client = KISApiClient(settings=settings, session=DummySession({"rt_cd": "0"}))
+
+    snapshot = client.build_polling_snapshot(
+        account_payload={"output1": [{"pdno": "005930", "hldg_qty": "2", "pchs_avg_pric": "70000"}]},
+        open_orders_payload={"output": [{"ODNO": "A1", "PDNO": "005930", "ord_qty": "2", "ord_psbl_qty": "1"}]},
+        cash_payload={"output": {"ord_psbl_cash": "150000"}},
+    )
+
+    assert snapshot.cash_available == 150000
+    assert snapshot.positions[0].ticker == "005930"
+    assert snapshot.open_orders[0].order_no == "A1"

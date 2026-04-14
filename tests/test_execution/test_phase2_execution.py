@@ -5,13 +5,14 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 
 from core.models import (
+    BrokerOrderSnapshot,
     BrokerPositionSnapshot,
     ExecutionFill,
     OrderStatus,
     ReconciliationStatus,
     Signal,
 )
-from data.database import Order, Position, PositionLot, TaxEvent, get_read_session, init_db
+from data.database import Order, Position, PositionLot, Signal as SignalRow, TaxEvent, get_read_session, init_db
 from execution.fill_processor import FillProcessor
 from execution.order_manager import OrderManager
 from execution.reconciliation import ReconciliationService
@@ -46,6 +47,65 @@ def test_order_manager_creates_validated_order(tmp_path) -> None:
         order = session.get(Order, submission.order_id)
     assert order is not None
     assert order.status == OrderStatus.VALIDATED.value
+
+
+def test_order_manager_retries_and_fails_after_limit(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    init_db(settings)
+    writer_queue = WriterQueue()
+    writer_queue.start()
+    manager = OrderManager(writer_queue=writer_queue, settings=settings)
+
+    try:
+        signal = Signal(
+            ticker="005930",
+            market="KR",
+            action="buy",
+            strategy="dual_momentum",
+            strength=1.0,
+            reason="entry",
+        )
+        signal_id = manager.persist_signal(signal)
+        intent = manager.create_order_intent(signal, signal_id=signal_id, quantity=3)
+        submission = manager.persist_validated_order(intent)
+        manager.record_submit_failure(submission.order_id, error_message="temporary", error_code="E1", retryable=True)
+        manager.record_submit_failure(submission.order_id, error_message="temporary", error_code="E1", retryable=True)
+        manager.record_submit_failure(submission.order_id, error_message="fatal", error_code="E2", retryable=True)
+    finally:
+        writer_queue.stop()
+
+    with get_read_session() as session:
+        order = session.get(Order, submission.order_id)
+
+    assert order is not None
+    assert order.retry_count == 3
+    assert order.status == OrderStatus.FAILED.value
+    assert order.error_code == "E2"
+
+
+def test_order_manager_cancel_flow(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    init_db(settings)
+    writer_queue = WriterQueue()
+    writer_queue.start()
+    manager = OrderManager(writer_queue=writer_queue, settings=settings)
+
+    try:
+        signal = Signal(ticker="AAPL", market="US", action="buy", strategy="dual_momentum", strength=1.0, reason="entry")
+        signal_id = manager.persist_signal(signal)
+        intent = manager.create_order_intent(signal, signal_id=signal_id, quantity=2, price=100)
+        submission = manager.persist_validated_order(intent)
+        manager.mark_submission_result(submission.order_id, broker_order_no="B-1", accepted=True)
+        manager.request_cancel(submission.order_id)
+        manager.confirm_cancel(submission.order_id)
+    finally:
+        writer_queue.stop()
+
+    with get_read_session() as session:
+        order = session.get(Order, submission.order_id)
+
+    assert order is not None
+    assert order.status == OrderStatus.CANCELLED.value
 
 
 def test_fill_processor_handles_partial_and_full_fill(tmp_path) -> None:
@@ -104,6 +164,7 @@ def test_fill_processor_handles_partial_and_full_fill(tmp_path) -> None:
         order = session.get(Order, submission.order_id)
         position = session.scalar(select(Position).where(Position.ticker == "AAPL"))
         lots = list(session.scalars(select(PositionLot).where(PositionLot.ticker == "AAPL").order_by(PositionLot.opened_at)))
+        signal_row = session.get(SignalRow, signal_id)
 
     assert order is not None
     assert order.status == OrderStatus.FILLED.value
@@ -111,6 +172,8 @@ def test_fill_processor_handles_partial_and_full_fill(tmp_path) -> None:
     assert position.quantity == 10
     assert len(lots) == 2
     assert lots[0].open_settlement_fx_rate == 1310
+    assert signal_row is not None
+    assert signal_row.status == "ordered"
 
 
 def test_fill_processor_creates_tax_hook_for_us_sell(tmp_path) -> None:
@@ -226,3 +289,39 @@ def test_reconciliation_service_flags_quantity_mismatch(tmp_path) -> None:
 
     assert result.status == ReconciliationStatus.MISMATCH_DETECTED
     assert result.summary["mismatch_count"] == 1
+
+
+def test_reconciliation_service_accepts_broker_order_snapshot_input(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    init_db(settings)
+    writer_queue = WriterQueue()
+    writer_queue.start()
+    manager = OrderManager(writer_queue=writer_queue, settings=settings)
+    reconciliation = ReconciliationService(writer_queue=writer_queue, settings=settings)
+
+    try:
+        signal = Signal(ticker="005930", market="KR", action="buy", strategy="trend_following", strength=1.0, reason="entry")
+        signal_id = manager.persist_signal(signal)
+        intent = manager.create_order_intent(signal, signal_id=signal_id, quantity=5, price=70000)
+        submission = manager.persist_validated_order(intent)
+        manager.mark_submission_result(submission.order_id, broker_order_no="KR-1", accepted=True)
+
+        result = reconciliation.reconcile(
+            broker_positions=[],
+            open_orders=[
+                BrokerOrderSnapshot(
+                    order_no="KR-1",
+                    ticker="005930",
+                    market="KR",
+                    side="buy",
+                    quantity=5,
+                    remaining_quantity=5,
+                    status="submitted",
+                )
+            ],
+            cash_available=1000000,
+        )
+    finally:
+        writer_queue.stop()
+
+    assert result.status == ReconciliationStatus.RECONCILED

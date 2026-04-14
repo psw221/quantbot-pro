@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from collections import deque
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import func, select
 
-from core.models import ExecutionFill, OrderStatus
-from data.database import Order, OrderExecution, Position, PositionLot, TaxEvent, Trade, utc_now
+from core.models import ExecutionFill, OrderStatus, SignalStatus
+from data.database import Order, OrderExecution, Position, PositionLot, Signal, TaxEvent, Trade, utc_now
 from execution.writer_queue import WriterQueue
 
 
@@ -86,6 +86,10 @@ class FillProcessor:
             OrderStatus.FILLED.value if cumulative_filled >= order.quantity else OrderStatus.PARTIALLY_FILLED.value
         )
         order.updated_at = utc_now()
+        signal_row = session.get(Signal, order.signal_id)
+        if signal_row is not None and order.status == OrderStatus.FILLED.value:
+            signal_row.status = SignalStatus.ORDERED.value
+            signal_row.processed_at = utc_now()
 
     def _apply_buy(self, session, order: Order, trade_row: Trade, fill: ExecutionFill) -> None:
         position = session.scalar(

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 from uuid import uuid4
 
 from sqlalchemy import func, select
@@ -40,6 +39,7 @@ class OrderManager:
         self.api_client = api_client
         self.reconciliation_status = ReconciliationStatus.IDLE
         self.trading_blocked = False
+        self.max_submit_retries = 3
 
     def create_order_intent(
         self,
@@ -89,6 +89,34 @@ class OrderManager:
         future = self.writer_queue.submit(
             lambda session: self._mark_submission_result(session, order_id, broker_order_no, accepted, error_message),
             description="mark submission result",
+        )
+        future.result()
+
+    def record_submit_failure(
+        self,
+        order_id: int,
+        *,
+        error_message: str,
+        error_code: str | None = None,
+        retryable: bool = True,
+    ) -> None:
+        future = self.writer_queue.submit(
+            lambda session: self._record_submit_failure(session, order_id, error_message, error_code, retryable),
+            description="record submit failure",
+        )
+        future.result()
+
+    def request_cancel(self, order_id: int) -> None:
+        future = self.writer_queue.submit(
+            lambda session: self._request_cancel(session, order_id),
+            description="request cancel",
+        )
+        future.result()
+
+    def confirm_cancel(self, order_id: int) -> None:
+        future = self.writer_queue.submit(
+            lambda session: self._confirm_cancel(session, order_id),
+            description="confirm cancel",
         )
         future.result()
 
@@ -189,6 +217,12 @@ class OrderManager:
         if accepted:
             row.kis_order_no = broker_order_no
             row.status = OrderStatus.SUBMITTED.value
+            row.error_code = None
+            row.error_message = None
+            signal_row = session.get(SignalRow, row.signal_id)
+            if signal_row is not None:
+                signal_row.status = SignalStatus.ORDERED.value
+                signal_row.processed_at = utc_now()
         else:
             row.status = OrderStatus.FAILED.value
             row.error_message = error_message
@@ -200,6 +234,37 @@ class OrderManager:
             return
         row.status = OrderStatus.FAILED.value
         row.error_message = reason
+        row.updated_at = utc_now()
+
+    def _record_submit_failure(self, session, order_id: int, error_message: str, error_code: str | None, retryable: bool) -> None:
+        row = session.get(Order, order_id)
+        if row is None:
+            return
+        row.retry_count += 1
+        row.error_code = error_code
+        row.error_message = error_message
+        row.updated_at = utc_now()
+
+        if retryable and row.retry_count < self.max_submit_retries:
+            row.status = OrderStatus.VALIDATED.value
+        else:
+            row.status = OrderStatus.FAILED.value
+
+    @staticmethod
+    def _request_cancel(session, order_id: int) -> None:
+        row = session.get(Order, order_id)
+        if row is None:
+            return
+        if row.status in (OrderStatus.SUBMITTED.value, OrderStatus.PARTIALLY_FILLED.value):
+            row.status = OrderStatus.CANCEL_PENDING.value
+            row.updated_at = utc_now()
+
+    @staticmethod
+    def _confirm_cancel(session, order_id: int) -> None:
+        row = session.get(Order, order_id)
+        if row is None:
+            return
+        row.status = OrderStatus.CANCELLED.value
         row.updated_at = utc_now()
 
     def _record_reconciliation_hold(self, session, ticker: str | None, summary: dict) -> None:
