@@ -179,3 +179,78 @@ def test_kis_client_builds_polling_snapshot(tmp_path: Path) -> None:
     assert snapshot.cash_available == 150000
     assert snapshot.positions[0].ticker == "005930"
     assert snapshot.open_orders[0].order_no == "A1"
+
+
+def test_kis_client_normalizes_us_polling_fields_with_sample_fallbacks(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    client = KISApiClient(settings=settings, session=DummySession({"rt_cd": "0"}))
+
+    snapshot = client.build_polling_snapshot(
+        account_payload={
+            "output1": [
+                {
+                    "ovrs_pdno": "AAPL",
+                    "ovrs_cblc_qty": "5",
+                    "ovrs_pchs_avg_pric": "180.5",
+                    "OVRS_EXCG_CD": "NASD",
+                    "crcy_cd": "USD",
+                }
+            ]
+        },
+        open_orders_payload={
+            "output1": [
+                {
+                    "odno": "US-1",
+                    "ovrs_pdno": "AAPL",
+                    "ovrs_excg_cd": "NASD",
+                    "ord_qty": "7",
+                    "nccs_qty": "2",
+                    "ovrs_ord_unpr": "185.0",
+                    "side": "buy",
+                }
+            ]
+        },
+        cash_payload={"output": {"ovrs_ord_psbl_amt": "2500"}},
+        default_market="US",
+        default_currency="USD",
+    )
+
+    assert snapshot.cash_available == 2500
+    assert snapshot.positions[0].market == "US"
+    assert snapshot.positions[0].avg_cost == 180.5
+    assert snapshot.open_orders[0].order_no == "US-1"
+    assert snapshot.open_orders[0].remaining_quantity == 2
+
+
+def test_kis_client_normalizes_order_result(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    client = KISApiClient(settings=settings, session=DummySession({"rt_cd": "0"}))
+
+    result = client.normalize_order_result(
+        {
+            "rt_cd": "0",
+            "msg_cd": "APBK0013",
+            "msg1": "ok",
+            "output": {"ODNO": "12345"},
+        }
+    )
+
+    assert result.accepted is True
+    assert result.broker_order_no == "12345"
+
+
+def test_kis_client_normalizes_failed_order_result(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    client = KISApiClient(settings=settings, session=DummySession({"rt_cd": "0"}))
+
+    result = client.normalize_order_result(
+        {
+            "rt_cd": "1",
+            "msg_cd": "ERR001",
+            "msg1": "failed",
+        }
+    )
+
+    assert result.accepted is False
+    assert result.error_code == "ERR001"
+    assert result.error_message == "failed"

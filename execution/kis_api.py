@@ -7,7 +7,7 @@ from typing import Any
 import requests
 
 from core.exceptions import AuthenticationError, BrokerApiError
-from core.models import BrokerOrderSnapshot, BrokerPollingSnapshot, BrokerPositionSnapshot
+from core.models import BrokerOrderResult, BrokerOrderSnapshot, BrokerPollingSnapshot, BrokerPositionSnapshot
 from core.settings import RuntimeEnv, Settings, get_settings
 
 
@@ -136,31 +136,51 @@ class KISApiClient:
         rows = payload.get("output") or payload.get("output1") or []
         normalized: list[BrokerOrderSnapshot] = []
         for row in rows:
-            order_no = str(row.get("ODNO") or row.get("order_no") or "")
+            order_no = str(row.get("ODNO") or row.get("odno") or row.get("order_no") or "")
             if not order_no:
                 continue
-            ticker = str(row.get("PDNO") or row.get("ticker") or "")
-            side_raw = str(row.get("sll_buy_dvsn_cd") or row.get("side") or "buy").lower()
-            side = "sell" if side_raw in {"02", "sell", "s"} else "buy"
-            quantity = int(float(row.get("ord_qty") or row.get("quantity") or 0))
+            ticker = str(row.get("PDNO") or row.get("pdno") or row.get("ovrs_pdno") or row.get("ticker") or "")
+            side_raw = str(
+                row.get("SLL_BUY_DVSN_CD")
+                or row.get("sll_buy_dvsn_cd")
+                or row.get("rvse_cncl_dvsn_name")
+                or row.get("side")
+                or "buy"
+            ).lower()
+            side = "sell" if side_raw in {"01", "sell", "s"} else "buy"
+            quantity = int(float(row.get("ORD_QTY") or row.get("ord_qty") or row.get("quantity") or 0))
             remaining_quantity = int(
                 float(
-                    row.get("ord_psbl_qty")
+                    row.get("ORD_PSBL_QTY")
+                    or row.get("ord_psbl_qty")
                     or row.get("remaining_quantity")
                     or row.get("unfilled_qty")
+                    or row.get("nccs_qty")
                     or quantity
                 )
             )
-            price_raw = row.get("ord_unpr") or row.get("price")
+            price_raw = row.get("ORD_UNPR") or row.get("ord_unpr") or row.get("ovrs_ord_unpr") or row.get("price")
+            market = (
+                row.get("OVRS_EXCG_CD")
+                or row.get("ovrs_excg_cd")
+                or row.get("market")
+                or default_market
+            )
             normalized.append(
                 BrokerOrderSnapshot(
                     order_no=order_no,
                     ticker=ticker,
-                    market=str(row.get("market") or default_market),
+                    market=self._normalize_market(str(market), default_market=default_market),
                     side=side,
                     quantity=quantity,
                     remaining_quantity=remaining_quantity,
-                    status=str(row.get("status") or row.get("ord_tmd") or "submitted"),
+                    status=str(
+                        row.get("status")
+                        or row.get("ord_st") 
+                        or row.get("ord_tmd")
+                        or row.get("ord_gno_brno")
+                        or "submitted"
+                    ),
                     price=None if price_raw in (None, "") else float(price_raw),
                 )
             )
@@ -180,14 +200,23 @@ class KISApiClient:
             if not ticker:
                 continue
             quantity = int(float(row.get("hldg_qty") or row.get("quantity") or row.get("ovrs_cblc_qty") or 0))
-            avg_cost = float(row.get("pchs_avg_pric") or row.get("avg_cost") or row.get("ovrs_now_pric1") or 0)
+            avg_cost = float(
+                row.get("pchs_avg_pric")
+                or row.get("avg_cost")
+                or row.get("pchs_avg_pric_amt")
+                or row.get("ovrs_pchs_avg_pric")
+                or row.get("ovrs_now_pric1")
+                or 0
+            )
+            market = row.get("market") or row.get("OVRS_EXCG_CD") or row.get("ovrs_excg_cd") or default_market
+            currency = row.get("currency") or row.get("crcy_cd") or default_currency
             normalized.append(
                 BrokerPositionSnapshot(
                     ticker=ticker,
-                    market=str(row.get("market") or default_market),
+                    market=self._normalize_market(str(market), default_market=default_market),
                     quantity=quantity,
                     avg_cost=avg_cost,
-                    currency=str(row.get("currency") or default_currency),
+                    currency=str(currency),
                     snapshot_at=time_to_utc_now(),
                     source_env=self.env.value,
                 )
@@ -202,8 +231,25 @@ class KISApiClient:
             output.get("ord_psbl_cash")
             or output.get("cash_available")
             or output.get("dnca_tot_amt")
+            or output.get("ovrs_ord_psbl_amt")
+            or output.get("frcr_ord_psbl_amt1")
             or 0
         )
+
+    def normalize_order_result(self, payload: dict[str, Any]) -> BrokerOrderResult:
+        accepted = str(payload.get("rt_cd")) == "0"
+        output = payload.get("output") or {}
+        broker_order_no = output.get("ODNO") or output.get("odno") or output.get("order_no")
+        return BrokerOrderResult(
+            accepted=accepted,
+            broker_order_no=None if broker_order_no in (None, "") else str(broker_order_no),
+            error_code=None if accepted else str(payload.get("msg_cd") or ""),
+            error_message=None if accepted else str(payload.get("msg1") or ""),
+            raw_payload=payload,
+        )
+
+    def normalize_cancel_result(self, payload: dict[str, Any]) -> BrokerOrderResult:
+        return self.normalize_order_result(payload)
 
     def build_polling_snapshot(
         self,
@@ -236,6 +282,15 @@ class KISApiClient:
             "websocket_base_url": self.endpoint.websocket_base_url,
             "app_key_masked": _mask_secret(self.credentials.app_key.get_secret_value()),
         }
+
+    @staticmethod
+    def _normalize_market(raw_market: str, *, default_market: str) -> str:
+        market = raw_market.upper()
+        if market in {"NASD", "NYSE", "AMEX", "US"}:
+            return "US"
+        if market in {"KRX", "KR"}:
+            return "KR"
+        return default_market
 
 
 def time_to_utc_now():

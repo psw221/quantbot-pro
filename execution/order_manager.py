@@ -138,8 +138,16 @@ class OrderManager:
             return
 
         response = self.api_client.submit_order(broker_payload, access_token=access_token)
-        broker_order_no = response.get("output", {}).get("ODNO") or response.get("order_no")
-        self.mark_submission_result(order_id, broker_order_no=broker_order_no, accepted=True)
+        result = self.api_client.normalize_order_result(response)
+        if result.accepted:
+            self.mark_submission_result(order_id, broker_order_no=result.broker_order_no, accepted=True)
+            return
+        self.record_submit_failure(
+            order_id,
+            error_message=result.error_message or "broker_submit_failed",
+            error_code=result.error_code,
+            retryable=True,
+        )
 
     def start_scheduled_poll(self) -> None:
         self.reconciliation_status = ReconciliationStatus.SCHEDULED_POLLING

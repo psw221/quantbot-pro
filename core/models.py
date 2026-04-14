@@ -176,3 +176,12 @@ class BrokerPollingSnapshot:
     open_orders: list[BrokerOrderSnapshot]
     cash_available: float
     raw_payloads: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class BrokerOrderResult:
+    accepted: bool
+    broker_order_no: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    raw_payload: dict[str, Any] = field(default_factory=dict)

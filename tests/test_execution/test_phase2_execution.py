@@ -108,6 +108,46 @@ def test_order_manager_cancel_flow(tmp_path) -> None:
     assert order.status == OrderStatus.CANCELLED.value
 
 
+def test_order_manager_uses_normalized_broker_result_on_submit_failure(tmp_path) -> None:
+    class SubmitFailClient:
+        def submit_order(self, payload, access_token=None):
+            return {"rt_cd": "1", "msg_cd": "ERR001", "msg1": "submit failed"}
+
+        def normalize_order_result(self, payload):
+            from core.models import BrokerOrderResult
+
+            return BrokerOrderResult(
+                accepted=False,
+                broker_order_no=None,
+                error_code=payload["msg_cd"],
+                error_message=payload["msg1"],
+                raw_payload=payload,
+            )
+
+    settings = build_settings(tmp_path)
+    init_db(settings)
+    writer_queue = WriterQueue()
+    writer_queue.start()
+    manager = OrderManager(writer_queue=writer_queue, api_client=SubmitFailClient(), settings=settings)
+
+    try:
+        signal = Signal(ticker="005930", market="KR", action="buy", strategy="dual_momentum", strength=1.0, reason="entry")
+        signal_id = manager.persist_signal(signal)
+        intent = manager.create_order_intent(signal, signal_id=signal_id, quantity=1, price=70000)
+        submission = manager.persist_validated_order(intent)
+        manager.place_order(submission.order_id, {"ticker": "005930"})
+    finally:
+        writer_queue.stop()
+
+    with get_read_session() as session:
+        order = session.get(Order, submission.order_id)
+
+    assert order is not None
+    assert order.status == OrderStatus.VALIDATED.value
+    assert order.retry_count == 1
+    assert order.error_code == "ERR001"
+
+
 def test_fill_processor_handles_partial_and_full_fill(tmp_path) -> None:
     settings = build_settings(tmp_path)
     init_db(settings)
