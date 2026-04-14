@@ -205,6 +205,13 @@ CREATE TABLE signals (
 );
 ```
 
+Canonical `signals.status` 값:
+
+- `pending`
+- `resolved`
+- `rejected`
+- `ordered`
+
 ## 5.5 `orders`
 
 ```sql
@@ -229,6 +236,19 @@ CREATE TABLE orders (
     FOREIGN KEY (signal_id) REFERENCES signals(id)
 );
 ```
+
+Canonical `orders.status` 값:
+
+- `pending`
+- `validated`
+- `submitted`
+- `partially_filled`
+- `filled`
+- `cancel_pending`
+- `cancelled`
+- `rejected`
+- `reconcile_hold`
+- `failed`
 
 ## 5.6 `order_executions`
 
@@ -375,6 +395,11 @@ CREATE TABLE tax_events (
 );
 ```
 
+Phase 2 구현 규칙:
+
+- `tax_events`는 미국 주식 매도 체결에서 FIFO 취득원가와 settlement FX 추적을 잃지 않기 위한 hook 테이블로 우선 사용합니다.
+- 최종 신고/리포트 계산 로직은 Phase 3 이상에서 확장할 수 있습니다.
+
 ## 5.12 `backtest_results`
 
 ```sql
@@ -426,6 +451,21 @@ CREATE TABLE reconciliation_runs (
     created_at          TEXT    NOT NULL
 );
 ```
+
+Canonical `reconciliation_runs.status` 값:
+
+- `ok`
+- `warning`
+- `failed`
+
+서비스 계층 canonical reconciliation 상태:
+
+- `idle`
+- `scheduled_polling`
+- `mismatch_detected`
+- `reconciling`
+- `reconciled`
+- `failed`
 
 ---
 
@@ -572,4 +612,3 @@ with engine.begin() as conn:
 | v1.0 | 2025-04 | 최초 작성 |
 | v1.1 | 2026-04 | 주문/체결 분리, 브로커 원장 분리 |
 | v1.2 | 2026-04 | 결제일 환율 필드 추가, WAL/Writer Queue 메타데이터 명시, reconciliation 이력 추가 |
-

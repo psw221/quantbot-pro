@@ -35,6 +35,12 @@ def build_settings(tmp_path: Path) -> Settings:
     return Settings.model_validate(
         {
             "env": "vts",
+            "allocation": {"domestic": 0.60, "overseas": 0.30, "cash_buffer": 0.10},
+            "strategy_weights": {
+                "dual_momentum": 0.30,
+                "trend_following": 0.25,
+                "factor_investing": 0.45,
+            },
             "database": {"path": str(tmp_path / "quantbot.db"), "busy_timeout_ms": 5000},
             "logging": {"level": "INFO", "directory": str(tmp_path / "logs")},
             "kis": {
@@ -59,8 +65,15 @@ def build_settings(tmp_path: Path) -> Settings:
                     },
                 },
             },
-            "rebalancing": {"broker_poll_interval_min": 10},
+            "rebalancing": {
+                "macro_threshold_pct_point": 0.05,
+                "macro_check": "monthly_eom",
+                "broker_poll_interval_min": 10,
+            },
             "risk": {
+                "max_single_stock_domestic": 0.05,
+                "max_single_stock_overseas": 0.03,
+                "max_sector_weight": 0.25,
                 "stop_loss_domestic": -0.07,
                 "stop_loss_overseas": -0.05,
                 "trailing_stop": -0.10,

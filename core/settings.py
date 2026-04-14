@@ -69,10 +69,15 @@ class KISSettings(BaseModel):
 
 
 class RebalancingSettings(BaseModel):
+    macro_threshold_pct_point: float = 0.05
+    macro_check: str = "monthly_eom"
     broker_poll_interval_min: int = 10
 
 
 class RiskSettings(BaseModel):
+    max_single_stock_domestic: float = 0.05
+    max_single_stock_overseas: float = 0.03
+    max_sector_weight: float = 0.25
     stop_loss_domestic: float = -0.07
     stop_loss_overseas: float = -0.05
     trailing_stop: float = -0.10
@@ -80,8 +85,36 @@ class RiskSettings(BaseModel):
     max_drawdown_limit: float = -0.15
 
 
+class AllocationSettings(BaseModel):
+    domestic: float = 0.60
+    overseas: float = 0.30
+    cash_buffer: float = 0.10
+
+    @model_validator(mode="after")
+    def validate_total(self) -> "AllocationSettings":
+        total = self.domestic + self.overseas + self.cash_buffer
+        if round(total, 6) != 1.0:
+            raise ConfigurationError("allocation weights must sum to 1.0")
+        return self
+
+
+class StrategyWeightsSettings(BaseModel):
+    dual_momentum: float = 0.30
+    trend_following: float = 0.25
+    factor_investing: float = 0.45
+
+    @model_validator(mode="after")
+    def validate_total(self) -> "StrategyWeightsSettings":
+        total = self.dual_momentum + self.trend_following + self.factor_investing
+        if round(total, 6) != 1.0:
+            raise ConfigurationError("strategy_weights must sum to 1.0")
+        return self
+
+
 class Settings(BaseModel):
     env: RuntimeEnv = RuntimeEnv.VTS
+    allocation: AllocationSettings = Field(default_factory=AllocationSettings)
+    strategy_weights: StrategyWeightsSettings = Field(default_factory=StrategyWeightsSettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
     kis: KISSettings

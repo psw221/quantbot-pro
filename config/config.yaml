@@ -1,5 +1,15 @@
 env: vts
 
+allocation:
+  domestic: 0.60
+  overseas: 0.30
+  cash_buffer: 0.10
+
+strategy_weights:
+  dual_momentum: 0.30
+  trend_following: 0.25
+  factor_investing: 0.45
+
 database:
   path: data/quantbot.db
   busy_timeout_ms: 5000
@@ -27,9 +37,14 @@ kis:
       token_path: /oauth2/tokenP
 
 rebalancing:
+  macro_threshold_pct_point: 0.05
+  macro_check: monthly_eom
   broker_poll_interval_min: 10
 
 risk:
+  max_single_stock_domestic: 0.05
+  max_single_stock_overseas: 0.03
+  max_sector_weight: 0.25
   stop_loss_domestic: -0.07
   stop_loss_overseas: -0.05
   trailing_stop: -0.10

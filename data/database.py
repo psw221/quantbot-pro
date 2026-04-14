@@ -176,6 +176,32 @@ class Trade(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
 
 
+class TaxEvent(Base):
+    __tablename__ = "tax_events"
+    __table_args__ = (Index("idx_tax_events_year_market", "tax_year", "market"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trade_id: Mapped[int] = mapped_column(ForeignKey("trades.id"), nullable=False, unique=True)
+    ticker: Mapped[str] = mapped_column(String, nullable=False)
+    market: Mapped[str] = mapped_column(String, nullable=False)
+    sell_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    sell_price: Mapped[float] = mapped_column(Float, nullable=False)
+    cost_basis: Mapped[float] = mapped_column(Float, nullable=False)
+    gain_loss_usd: Mapped[float | None] = mapped_column(Float)
+    gain_loss_krw: Mapped[float] = mapped_column(Float, nullable=False)
+    buy_trade_fx_rate: Mapped[float | None] = mapped_column(Float)
+    buy_settlement_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    buy_settlement_fx_rate: Mapped[float | None] = mapped_column(Float)
+    sell_trade_fx_rate: Mapped[float | None] = mapped_column(Float)
+    sell_settlement_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sell_settlement_fx_rate: Mapped[float | None] = mapped_column(Float)
+    fx_rate_source: Mapped[str | None] = mapped_column(String)
+    taxable_gain: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    tax_year: Mapped[int] = mapped_column(Integer, nullable=False)
+    is_included_in_report: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
 class TokenStore(Base):
     __tablename__ = "token_store"
 

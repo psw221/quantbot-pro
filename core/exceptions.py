@@ -24,3 +24,11 @@ class BrokerApiError(QuantBotError):
     def __init__(self, message: str, *, status_code: int | None = None) -> None:
         super().__init__(message)
         self.status_code = status_code
+
+
+class DomainValidationError(QuantBotError):
+    """Raised when domain-level validation fails."""
+
+
+class ReconciliationError(QuantBotError):
+    """Raised when reconciliation cannot safely complete."""

@@ -484,3 +484,55 @@ python scripts/validate_config.py
 - 설정 파일: `config/config.yaml`
 - 민감 정보: `config/.env`
 
+## 문서 참조 규칙
+
+Before implementing any feature that changes domain logic, strategy behavior,
+order lifecycle, reconciliation, polling, persistence, or tax calculation,
+read these documents first:
+
+- `docs/PRD_v1.4.md`
+- `docs/DB_SCHEMA_v1.2.md`
+
+Follow these rules:
+- Treat `AGENTS.md` as the always-on repository rulebook.
+- Treat `docs/PRD_v1.4.md` as the source of truth for product behavior and operational policy.
+- Treat `docs/DB_SCHEMA_v1.2.md` as the source of truth for persistence models, order/execution/trade relationships, reconciliation records, settlement FX fields, and SQLite architecture constraints.
+- If these documents appear inconsistent, do not guess. Report the conflict first, propose the smallest safe resolution, and wait for approval before expanding scope.
+- Do not implement DB schema changes, order state changes, polling/reconciliation logic, or tax-related calculations without checking the two docs above first.
+
+## 문서 업데이트 규칙
+
+When a code change affects product behavior, operational policy, domain models,
+DB schema, order lifecycle, reconciliation, polling behavior, tax logic, or runbooks,
+update the relevant documentation in the same task.
+
+Documentation update rules:
+- Update `docs/PRD_v1.4.md` when product behavior, operational rules, priorities, or phase scope changes.
+- Update `docs/DB_SCHEMA_v1.2.md` when tables, fields, indexes, state relationships, settlement FX fields, or SQLite architecture rules change.
+- Update `AGENTS.md` when repository-wide implementation rules, coding constraints, workflow rules, or document reference/update policies change.
+- If a change affects code but does not require a doc update, explicitly state why no documentation change is needed.
+- Do not leave schema, state-transition, or operational behavior changes undocumented.
+- If documentation and code disagree, report the mismatch first and propose the smallest safe correction.
+- In every substantial task result, include a “Docs updated” summary listing which files were changed or why no doc change was required.
+
+## 작업 전 점검 규칙
+
+Before implementing any non-trivial change:
+- identify affected modules and state boundaries first
+- list assumptions that are not explicitly stated in docs
+- report doc/code mismatches before editing
+- for multi-step work, produce a short plan before making changes
+
+## 검증 규칙
+
+After every substantial change:
+- run the smallest relevant test first
+- then run the broader project verification command
+- if tests are skipped, explain exactly why
+- include the executed verification commands in the final summary
+
+## 범위 통제 규칙
+
+Do not expand scope without explicit approval.
+Prefer the smallest safe implementation that satisfies the current task.
+If a better larger refactor is possible, propose it separately instead of bundling it in.

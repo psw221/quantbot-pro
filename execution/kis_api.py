@@ -116,6 +116,21 @@ class KISApiClient:
             access_token=access_token,
         )
 
+    def submit_order(self, payload: dict[str, Any], access_token: str | None = None) -> dict[str, Any]:
+        return self.request(
+            "POST",
+            "/uapi/domestic-stock/v1/trading/order-cash",
+            json=payload,
+            access_token=access_token,
+        )
+
+    def get_cash_balance(self, access_token: str) -> dict[str, Any]:
+        return self.request(
+            "GET",
+            "/uapi/domestic-stock/v1/trading/inquire-psbl-order",
+            access_token=access_token,
+        )
+
     def describe_environment(self) -> dict[str, str]:
         return {
             "env": self.env.value if isinstance(self.env, RuntimeEnv) else str(self.env),

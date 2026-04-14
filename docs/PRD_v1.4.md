@@ -207,6 +207,12 @@
 | 복수 전략 동시 매도 | 전량 청산 |
 | 손절 + 리밸런싱 매수 충돌 | 손절 우선, 당일 재매수 금지 |
 
+추가 운영 규칙:
+
+- 신호 충돌 해소는 `signal_resolver`에서 단일 책임으로 수행합니다.
+- 충돌 해소 순서는 `매도 우선 -> 손절 우선 -> 복수 매수 합산 -> 종목 상한 비례 축소`를 기본 규칙으로 합니다.
+- 리스크 게이트를 통과하지 못한 신호는 주문으로 진행하지 않고 reject 사유를 남깁니다.
+
 ### 3.10 이벤트 리스크 대응
 
 | 이벤트 | 감지 방법 | 대응 |
@@ -352,6 +358,39 @@ Layer 5  모니터링 및 DR
 - [ ] mismatch 발생 시 신규 주문을 일시 중단하고 재동기화 수행
 - [ ] 브로커 스냅샷을 저장하여 DR 및 추적에 활용
 
+### 주문 상태 전이 기준
+
+Phase 2 기준 canonical 상태는 아래와 같습니다.
+
+| 상태 | 의미 |
+|------|------|
+| `pending` | 신호는 생성되었으나 주문 검증 전 |
+| `validated` | 리스크 및 제약 검증을 통과한 주문 초안 |
+| `submitted` | 브로커 제출 완료, 체결 대기 |
+| `partially_filled` | 부분체결 발생, 잔량 존재 |
+| `filled` | 전량 체결 완료 |
+| `cancel_pending` | 취소 요청 후 브로커 확인 대기 |
+| `cancelled` | 취소 완료 |
+| `rejected` | 리스크 또는 브로커 거부 |
+| `reconcile_hold` | 정합성 mismatch로 신규 진행 중단 상태 |
+| `failed` | 복구 불가 오류 상태 |
+
+### Reconciliation 상태 전이 기준
+
+| 상태 | 의미 |
+|------|------|
+| `idle` | 대기 상태 |
+| `scheduled_polling` | 10분 주기 점검 수행 중 |
+| `mismatch_detected` | mismatch 탐지 |
+| `reconciling` | 복구 또는 fill re-sync 진행 중 |
+| `reconciled` | 내부 상태와 브로커 상태 일치 확인 |
+| `failed` | 복구 실패 |
+
+운영 기본값:
+
+- mismatch 발생 시 신규 주문 중단 범위는 Phase 2 기본안으로 **계정/환경 단위**로 둡니다.
+- 더 작은 범위로 축소하려면 테스트와 운영 문서 근거가 먼저 필요합니다.
+
 ## 5.7 국내 시장 특수 제약 검증
 
 - [ ] 가격 제한폭 검증
@@ -414,6 +453,11 @@ Layer 5  모니터링 및 DR
 - [ ] 미국 주식 기본 공제 추적
 - [ ] 월간 리포트에 세금 추산 반영
 - [ ] 결제일 환율 기반 세금 추산 가능 구조 확보
+
+Phase 2 범위:
+
+- `order_executions`, `trades`, `position_lots`에 `settlement_date`, `settlement_fx_rate`, `trade_fx_rate`, `fx_rate_source`를 유지합니다.
+- 매도 체결 시 `tax_events` 생성은 hook 수준까지 포함할 수 있으나, 최종 세금 계산 정책 완성은 Phase 3 이후로 둡니다.
 
 ### 6.6 장애 복구 (DR)
 
@@ -501,4 +545,3 @@ quantbot-pro/
 ├── monitor/
 └── scripts/
 ```
-
