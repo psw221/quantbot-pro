@@ -250,6 +250,13 @@ Canonical `orders.status` 값:
 - `reconcile_hold`
 - `failed`
 
+`orders.error_code`, `orders.error_message` 사용 원칙:
+
+- 브로커 제출 실패의 정규화된 결과만 저장합니다.
+- `retryable`, `terminal`, `auth`, `reconcile_hold` 분류 판단에 필요한 최소 오류 정보만 남깁니다.
+- 브로커 raw payload 전체나 인증 헤더는 저장하지 않습니다.
+- `reconcile_hold` 전환 시에도 `error_code`, `error_message`에는 hold 원인을 추적할 수 있는 최소 문자열만 저장합니다.
+
 ## 5.6 `order_executions`
 
 부분체결을 표현하는 개별 체결 이벤트 테이블입니다.
@@ -466,6 +473,12 @@ Canonical `reconciliation_runs.status` 값:
 - `reconciling`
 - `reconciled`
 - `failed`
+
+실패 분류와 정합성 기록 원칙:
+
+- `auth` 오류 자체는 `reconciliation_runs`를 만들지 않습니다.
+- `reconcile_hold` 전환은 정합성 복구가 필요하다는 의미이므로 `reconciliation_runs` 기록을 남길 수 있습니다.
+- `summary_json`에는 민감정보 없이 mismatch 원인, 분류, 관련 `order_id` 수준의 최소 정보만 저장합니다.
 
 ---
 

@@ -49,6 +49,13 @@ class ReconciliationMismatchType(str, Enum):
     CASH_DIFF = "cash_diff"
 
 
+class SubmitFailureClass(str, Enum):
+    RETRYABLE = "retryable"
+    TERMINAL = "terminal"
+    AUTH = "auth"
+    RECONCILE_HOLD = "reconcile_hold"
+
+
 @dataclass(slots=True)
 class BrokerOrderSnapshot:
     order_no: str
@@ -185,3 +192,11 @@ class BrokerOrderResult:
     error_code: str | None = None
     error_message: str | None = None
     raw_payload: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class SubmitFailureDecision:
+    failure_class: SubmitFailureClass
+    retryable: bool
+    block_trading: bool = False
+    require_reconciliation_hold: bool = False

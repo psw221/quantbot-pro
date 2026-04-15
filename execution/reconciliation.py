@@ -29,7 +29,7 @@ class ReconciliationService:
         self,
         *,
         broker_positions: list[BrokerPositionSnapshot],
-        open_orders: list[BrokerOrderSnapshot | dict],
+        open_orders: list[BrokerOrderSnapshot],
         cash_available: float,
         missing_fills: list[ExecutionFill] | None = None,
     ) -> ReconciliationResult:
@@ -77,7 +77,7 @@ class ReconciliationService:
                 select(Order).where(Order.status.in_([OrderStatus.SUBMITTED.value, OrderStatus.PARTIALLY_FILLED.value]))
             )
         )
-        broker_order_ids = {self._extract_order_no(item) for item in open_orders if self._extract_order_no(item)}
+        broker_order_ids = {item.order_no for item in open_orders if item.order_no}
         for order in internal_open_orders:
             if order.kis_order_no and order.kis_order_no not in broker_order_ids and not missing_fills:
                 mismatches.append(
@@ -135,9 +135,3 @@ class ReconciliationService:
             missing_fills=missing_fills,
             summary={"cash_available": cash_available, "mismatch_count": len(mismatches)},
         )
-
-    @staticmethod
-    def _extract_order_no(item: BrokerOrderSnapshot | dict) -> str:
-        if isinstance(item, BrokerOrderSnapshot):
-            return item.order_no
-        return str(item.get("order_no") or item.get("ODNO") or "")

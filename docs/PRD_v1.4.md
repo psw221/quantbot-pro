@@ -358,6 +358,22 @@ Layer 5  모니터링 및 DR
 - [ ] mismatch 발생 시 신규 주문을 일시 중단하고 재동기화 수행
 - [ ] 브로커 스냅샷을 저장하여 DR 및 추적에 활용
 
+### 브로커 응답 정규화 계약
+
+주문 실행 계층은 KIS raw payload를 직접 비즈니스 로직에 노출하지 않고 아래 내부 표준 표면으로 정규화합니다.
+
+- 주문 제출/취소 결과: `accepted`, `broker_order_no`, `error_code`, `error_message`
+- 미체결 주문 스냅샷: `order_no`, `ticker`, `market`, `side`, `quantity`, `remaining_quantity`, `status`, `price`
+- 브로커 포지션 스냅샷: `ticker`, `market`, `quantity`, `avg_cost`, `currency`, `snapshot_at`, `source_env`
+- 브로커 polling 스냅샷: `positions`, `open_orders`, `cash_available`
+
+운영 원칙:
+
+- `order_manager`, `reconciliation`은 raw KIS field name에 직접 의존하지 않습니다.
+- 국내/미국 필드 차이는 adapter 계층에서 흡수합니다.
+- 공식 샘플 기준으로 구현한 항목은 `sample_confirmed`로 관리하고, 실제 VTS payload 확보 후 `confirmed`로 승격합니다.
+- 원본 브로커 응답 전문은 민감정보와 계약 변경 리스크 때문에 DB에 저장하지 않습니다.
+
 ### 주문 상태 전이 기준
 
 Phase 2 기준 canonical 상태는 아래와 같습니다.
@@ -390,6 +406,23 @@ Phase 2 기준 canonical 상태는 아래와 같습니다.
 
 - mismatch 발생 시 신규 주문 중단 범위는 Phase 2 기본안으로 **계정/환경 단위**로 둡니다.
 - 더 작은 범위로 축소하려면 테스트와 운영 문서 근거가 먼저 필요합니다.
+
+### 주문 제출 실패 분류 규칙
+
+주문 제출 실패는 아래 네 가지로 분류합니다.
+
+| 분류 | 기준 | 처리 |
+|------|------|------|
+| `retryable` | rate limit, timeout, temporary broker error, HTTP `408/409/425/429/500/502/503/504` | `retry_count` 증가, 재시도 한도 미만이면 `validated` 유지 |
+| `terminal` | 잘못된 주문 파라미터, 비재시도 브로커 거절, 일반 `4xx` 오류 | 즉시 `failed` |
+| `auth` | token/auth/access 오류, `AuthenticationError` | 즉시 `failed`, 신규 주문 차단 |
+| `reconcile_hold` | broker/internal state mismatch, sync required, `ReconciliationError` | 주문을 `reconcile_hold`로 전환하고 reconciliation 수행 |
+
+추가 운영 원칙:
+
+- `auth`, `reconcile_hold`는 `trading_blocked=True`를 유발합니다.
+- `reconcile_hold`는 개별 주문 실패가 아니라 정합성 복구 흐름의 시작점으로 간주합니다.
+- 재시도 가능 오류도 최대 재시도 횟수 초과 시 `failed`로 종결합니다.
 
 ## 5.7 국내 시장 특수 제약 검증
 

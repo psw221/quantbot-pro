@@ -12,6 +12,7 @@ from core.models import (
     ReconciliationStatus,
     Signal,
 )
+from core.exceptions import AuthenticationError, BrokerApiError, ReconciliationError
 from data.database import Order, Position, PositionLot, Signal as SignalRow, TaxEvent, get_read_session, init_db
 from execution.fill_processor import FillProcessor
 from execution.order_manager import OrderManager
@@ -143,9 +144,143 @@ def test_order_manager_uses_normalized_broker_result_on_submit_failure(tmp_path)
         order = session.get(Order, submission.order_id)
 
     assert order is not None
-    assert order.status == OrderStatus.VALIDATED.value
+    assert order.status == OrderStatus.FAILED.value
     assert order.retry_count == 1
     assert order.error_code == "ERR001"
+
+
+def test_order_manager_blocks_trading_on_auth_failure(tmp_path) -> None:
+    class AuthFailClient:
+        def submit_order(self, payload, access_token=None):
+            raise AuthenticationError("token expired")
+
+        def normalize_order_result(self, payload):
+            raise AssertionError("normalize_order_result should not be called")
+
+    settings = build_settings(tmp_path)
+    init_db(settings)
+    writer_queue = WriterQueue()
+    writer_queue.start()
+    manager = OrderManager(writer_queue=writer_queue, api_client=AuthFailClient(), settings=settings)
+
+    try:
+        signal = Signal(ticker="AAPL", market="US", action="buy", strategy="dual_momentum", strength=1.0, reason="entry")
+        signal_id = manager.persist_signal(signal)
+        intent = manager.create_order_intent(signal, signal_id=signal_id, quantity=1, price=100)
+        submission = manager.persist_validated_order(intent)
+        manager.place_order(submission.order_id, {"ticker": "AAPL"})
+    finally:
+        writer_queue.stop()
+
+    with get_read_session() as session:
+        order = session.get(Order, submission.order_id)
+
+    assert order is not None
+    assert order.status == OrderStatus.FAILED.value
+    assert order.error_code == "AUTH_ERROR"
+    assert manager.trading_blocked is True
+
+
+def test_order_manager_marks_terminal_broker_api_error_as_failed(tmp_path) -> None:
+    class TerminalFailClient:
+        def submit_order(self, payload, access_token=None):
+            raise BrokerApiError("validation failed", status_code=400)
+
+        def normalize_order_result(self, payload):
+            raise AssertionError("normalize_order_result should not be called")
+
+    settings = build_settings(tmp_path)
+    init_db(settings)
+    writer_queue = WriterQueue()
+    writer_queue.start()
+    manager = OrderManager(writer_queue=writer_queue, api_client=TerminalFailClient(), settings=settings)
+
+    try:
+        signal = Signal(ticker="005930", market="KR", action="buy", strategy="dual_momentum", strength=1.0, reason="entry")
+        signal_id = manager.persist_signal(signal)
+        intent = manager.create_order_intent(signal, signal_id=signal_id, quantity=1, price=70000)
+        submission = manager.persist_validated_order(intent)
+        manager.place_order(submission.order_id, {"ticker": "005930"})
+    finally:
+        writer_queue.stop()
+
+    with get_read_session() as session:
+        order = session.get(Order, submission.order_id)
+
+    assert order is not None
+    assert order.status == OrderStatus.FAILED.value
+    assert order.retry_count == 1
+    assert manager.trading_blocked is False
+
+
+def test_order_manager_moves_order_to_reconcile_hold_on_reconciliation_failure(tmp_path) -> None:
+    class ReconcileFailClient:
+        def submit_order(self, payload, access_token=None):
+            raise ReconciliationError("broker state mismatch")
+
+        def normalize_order_result(self, payload):
+            raise AssertionError("normalize_order_result should not be called")
+
+    settings = build_settings(tmp_path)
+    init_db(settings)
+    writer_queue = WriterQueue()
+    writer_queue.start()
+    manager = OrderManager(writer_queue=writer_queue, api_client=ReconcileFailClient(), settings=settings)
+
+    try:
+        signal = Signal(ticker="AAPL", market="US", action="buy", strategy="dual_momentum", strength=1.0, reason="entry")
+        signal_id = manager.persist_signal(signal)
+        intent = manager.create_order_intent(signal, signal_id=signal_id, quantity=1, price=100)
+        submission = manager.persist_validated_order(intent)
+        manager.place_order(submission.order_id, {"ticker": "AAPL"})
+    finally:
+        writer_queue.stop()
+
+    with get_read_session() as session:
+        order = session.get(Order, submission.order_id)
+
+    assert order is not None
+    assert order.status == OrderStatus.RECONCILE_HOLD.value
+    assert order.error_code == "RECONCILIATION_REQUIRED"
+    assert manager.trading_blocked is True
+
+
+def test_order_manager_classifies_retryable_normalized_failure(tmp_path) -> None:
+    class RetryableFailClient:
+        def submit_order(self, payload, access_token=None):
+            return {"rt_cd": "1", "msg_cd": "RATE_LIMIT", "msg1": "retry later"}
+
+        def normalize_order_result(self, payload):
+            from core.models import BrokerOrderResult
+
+            return BrokerOrderResult(
+                accepted=False,
+                error_code=payload["msg_cd"],
+                error_message=payload["msg1"],
+                raw_payload=payload,
+            )
+
+    settings = build_settings(tmp_path)
+    init_db(settings)
+    writer_queue = WriterQueue()
+    writer_queue.start()
+    manager = OrderManager(writer_queue=writer_queue, api_client=RetryableFailClient(), settings=settings)
+
+    try:
+        signal = Signal(ticker="005930", market="KR", action="buy", strategy="dual_momentum", strength=1.0, reason="entry")
+        signal_id = manager.persist_signal(signal)
+        intent = manager.create_order_intent(signal, signal_id=signal_id, quantity=1, price=70000)
+        submission = manager.persist_validated_order(intent)
+        manager.place_order(submission.order_id, {"ticker": "005930"})
+    finally:
+        writer_queue.stop()
+
+    with get_read_session() as session:
+        order = session.get(Order, submission.order_id)
+
+    assert order is not None
+    assert order.status == OrderStatus.VALIDATED.value
+    assert order.retry_count == 1
 
 
 def test_fill_processor_handles_partial_and_full_fill(tmp_path) -> None:

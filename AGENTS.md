@@ -320,6 +320,13 @@ PRAGMA foreign_keys=ON;
 - DB에는 `issued_at`, `expires_at`, `env`, `is_valid`만 저장
 - 토큰 갱신 실패 시 즉시 알림 + 재시도 + Emergency Stop
 
+### 8.4 브로커 응답 정규화
+
+- KIS raw payload parsing은 `execution/kis_api.py` adapter 계층에만 둡니다.
+- `execution/order_manager.py`, `execution/reconciliation.py`는 정규화된 결과 모델만 사용합니다.
+- 국내/미국 응답 차이는 adapter에서 흡수합니다.
+- raw 응답 전문, 인증 헤더, 민감정보는 DB와 로그에 저장하지 않습니다.
+
 ---
 
 ## 9. 오더 관리자 책임 범위
@@ -363,6 +370,13 @@ PRAGMA foreign_keys=ON;
   - `position_lots` 갱신
   - `positions` 갱신
   - `tax_events` 갱신 필요 시 반영
+
+### 9.4 주문 실패 분류 규칙
+
+- 주문 제출 실패 분류는 `retryable`, `terminal`, `auth`, `reconcile_hold` 네 가지로 고정합니다.
+- `retryable`만 재시도 대상입니다.
+- `auth`와 `reconcile_hold`는 신규 주문 차단으로 이어져야 합니다.
+- `reconcile_hold`는 개별 브로커 오류가 아니라 정합성 복구 절차 시작으로 취급합니다.
 
 ---
 

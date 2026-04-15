@@ -6,14 +6,18 @@ from uuid import uuid4
 from sqlalchemy import func, select
 
 from core.models import (
+    BrokerOrderResult,
     OrderIntent,
     OrderStatus,
     ReconciliationStatus,
     RiskDecision,
     Signal,
     SignalStatus,
+    SubmitFailureClass,
+    SubmitFailureDecision,
 )
 from core.settings import Settings, get_settings
+from core.exceptions import AuthenticationError, BrokerApiError, ReconciliationError
 from data.database import Order, ReconciliationRun, Signal as SignalRow, utc_now
 from execution.kis_api import KISApiClient
 from execution.writer_queue import WriterQueue
@@ -137,16 +141,58 @@ class OrderManager:
             )
             return
 
-        response = self.api_client.submit_order(broker_payload, access_token=access_token)
-        result = self.api_client.normalize_order_result(response)
+        try:
+            response = self.api_client.submit_order(broker_payload, access_token=access_token)
+            result = self.api_client.normalize_order_result(response)
+        except AuthenticationError as exc:
+            self._handle_submit_failure(
+                order_id,
+                broker_payload=broker_payload,
+                error_message=str(exc) or "authentication_failed",
+                error_code="AUTH_ERROR",
+                decision=SubmitFailureDecision(
+                    failure_class=SubmitFailureClass.AUTH,
+                    retryable=False,
+                    block_trading=True,
+                ),
+            )
+            return
+        except ReconciliationError as exc:
+            self._handle_submit_failure(
+                order_id,
+                broker_payload=broker_payload,
+                error_message=str(exc) or "reconciliation_required",
+                error_code="RECONCILIATION_REQUIRED",
+                decision=SubmitFailureDecision(
+                    failure_class=SubmitFailureClass.RECONCILE_HOLD,
+                    retryable=False,
+                    block_trading=True,
+                    require_reconciliation_hold=True,
+                ),
+            )
+            return
+        except BrokerApiError as exc:
+            decision = self.classify_submit_exception(exc)
+            self._handle_submit_failure(
+                order_id,
+                broker_payload=broker_payload,
+                error_message=str(exc) or "broker_api_error",
+                error_code=None,
+                decision=decision,
+            )
+            return
+
         if result.accepted:
             self.mark_submission_result(order_id, broker_order_no=result.broker_order_no, accepted=True)
             return
-        self.record_submit_failure(
+
+        decision = self.classify_submit_result(result)
+        self._handle_submit_failure(
             order_id,
+            broker_payload=broker_payload,
             error_message=result.error_message or "broker_submit_failed",
             error_code=result.error_code,
-            retryable=True,
+            decision=decision,
         )
 
     def start_scheduled_poll(self) -> None:
@@ -160,6 +206,91 @@ class OrderManager:
             description="record reconciliation hold",
         )
         future.result()
+
+    @staticmethod
+    def classify_submit_result(result: BrokerOrderResult) -> SubmitFailureDecision:
+        code = (result.error_code or "").upper()
+        message = (result.error_message or "").lower()
+
+        if any(token in code for token in ("AUTH", "TOKEN", "ACCESS")) or any(
+            token in message for token in ("token", "auth", "unauthorized", "forbidden", "access denied")
+        ):
+            return SubmitFailureDecision(
+                failure_class=SubmitFailureClass.AUTH,
+                retryable=False,
+                block_trading=True,
+            )
+
+        if any(token in code for token in ("RECON", "SYNC", "MISMATCH")) or any(
+            token in message for token in ("reconcile", "mismatch", "sync required")
+        ):
+            return SubmitFailureDecision(
+                failure_class=SubmitFailureClass.RECONCILE_HOLD,
+                retryable=False,
+                block_trading=True,
+                require_reconciliation_hold=True,
+            )
+
+        if any(token in code for token in ("TIMEOUT", "TEMP", "RATE", "THROTTLE", "503", "504", "429")) or any(
+            token in message for token in ("timeout", "temporary", "temporarily", "rate limit", "throttle", "retry later")
+        ):
+            return SubmitFailureDecision(
+                failure_class=SubmitFailureClass.RETRYABLE,
+                retryable=True,
+            )
+
+        return SubmitFailureDecision(
+            failure_class=SubmitFailureClass.TERMINAL,
+            retryable=False,
+        )
+
+    @staticmethod
+    def classify_submit_exception(exc: BrokerApiError) -> SubmitFailureDecision:
+        if exc.status_code in {408, 409, 425, 429, 500, 502, 503, 504}:
+            return SubmitFailureDecision(
+                failure_class=SubmitFailureClass.RETRYABLE,
+                retryable=True,
+            )
+        return SubmitFailureDecision(
+            failure_class=SubmitFailureClass.TERMINAL,
+            retryable=False,
+        )
+
+    def _handle_submit_failure(
+        self,
+        order_id: int,
+        *,
+        broker_payload: dict,
+        error_message: str,
+        error_code: str | None,
+        decision: SubmitFailureDecision,
+    ) -> None:
+        if decision.block_trading:
+            self.trading_blocked = True
+
+        if decision.require_reconciliation_hold:
+            future = self.writer_queue.submit(
+                lambda session: self._mark_order_reconcile_hold(session, order_id, error_message, error_code),
+                description="mark order reconcile hold",
+            )
+            future.result()
+            self.flag_reconciliation_hold(
+                broker_payload.get("ticker"),
+                summary={
+                    "mismatch_count": 1,
+                    "reason": decision.failure_class.value,
+                    "order_id": order_id,
+                    "error_code": error_code,
+                },
+            )
+            return
+
+        self.record_submit_failure(
+            order_id,
+            error_message=error_message,
+            error_code=error_code,
+            retryable=decision.retryable,
+        )
 
     @staticmethod
     def _insert_signal(session, signal: Signal) -> int:
@@ -273,6 +404,16 @@ class OrderManager:
         if row is None:
             return
         row.status = OrderStatus.CANCELLED.value
+        row.updated_at = utc_now()
+
+    @staticmethod
+    def _mark_order_reconcile_hold(session, order_id: int, error_message: str, error_code: str | None) -> None:
+        row = session.get(Order, order_id)
+        if row is None:
+            return
+        row.status = OrderStatus.RECONCILE_HOLD.value
+        row.error_message = error_message
+        row.error_code = error_code
         row.updated_at = utc_now()
 
     def _record_reconciliation_hold(self, session, ticker: str | None, summary: dict) -> None:
