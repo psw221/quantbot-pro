@@ -62,6 +62,15 @@ class RuntimeHealthStatus(str, Enum):
     CRITICAL = "critical"
 
 
+class EventType(str, Enum):
+    FOMC = "fomc"
+    BOK = "bok"
+    CPI_PPI = "cpi_ppi"
+    EARNINGS = "earnings"
+    VIX_HIGH = "vix_high"
+    VKOSPI_HIGH = "vkospi_high"
+
+
 @dataclass(slots=True)
 class BrokerOrderSnapshot:
     order_no: str
@@ -144,10 +153,41 @@ class BrokerPositionSnapshot:
 
 
 @dataclass(slots=True)
+class PriceBar:
+    ticker: str
+    market: MarketCode
+    timestamp: datetime
+    close: float
+    high: float | None = None
+    low: float | None = None
+
+
+@dataclass(slots=True)
+class FactorSnapshot:
+    ticker: str
+    market: MarketCode
+    value_score: float
+    quality_score: float
+    momentum_score: float
+    low_vol_score: float
+
+
+@dataclass(slots=True)
+class EventFlag:
+    event_type: EventType
+    market: MarketCode
+    ticker: str | None = None
+    active: bool = True
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class RiskDecision:
     approved: bool
     reason: str = ""
     tags: list[str] = field(default_factory=list)
+    scale_factor: float = 1.0
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -158,6 +198,9 @@ class SizingInput:
     cash_available: float
     price: float
     volatility: float
+    target_volatility: float | None = None
+    min_position_fraction: float | None = None
+    risk_scale: float = 1.0
 
 
 @dataclass(slots=True)
@@ -166,6 +209,7 @@ class SizingDecision:
     target_notional: float
     capped: bool = False
     reason: str = ""
+    volatility_scale: float = 1.0
 
 
 @dataclass(slots=True)

@@ -111,10 +111,53 @@ class StrategyWeightsSettings(BaseModel):
         return self
 
 
+class DualMomentumSettings(BaseModel):
+    lookback_days: int = 252
+    top_n: int = 10
+    rebalance_day_of_month: int = 1
+    absolute_momentum_floor: float = 0.0
+
+
+class TrendFollowingSettings(BaseModel):
+    ema_fast_period: int = 20
+    ema_slow_period: int = 60
+    atr_period: int = 14
+    rsi_period: int = 14
+    rsi_entry_floor: float = 30.0
+    target_volatility: float = 0.13
+    atr_stop_multiple: float = 2.0
+
+
+class FactorInvestingSettings(BaseModel):
+    top_n: int = 25
+    rebalance_months: list[int] = Field(default_factory=lambda: [1, 4, 7, 10])
+    rebalance_day_of_month: int = 1
+    value_weight: float = 0.25
+    quality_weight: float = 0.25
+    momentum_weight: float = 0.25
+    low_vol_weight: float = 0.25
+
+    @model_validator(mode="after")
+    def validate_weights(self) -> "FactorInvestingSettings":
+        total = self.value_weight + self.quality_weight + self.momentum_weight + self.low_vol_weight
+        if round(total, 6) != 1.0:
+            raise ConfigurationError("factor investing weights must sum to 1.0")
+        return self
+
+
+class StrategySettings(BaseModel):
+    dual_momentum: DualMomentumSettings = Field(default_factory=DualMomentumSettings)
+    trend_following: TrendFollowingSettings = Field(default_factory=TrendFollowingSettings)
+    factor_investing: FactorInvestingSettings = Field(default_factory=FactorInvestingSettings)
+    min_position_fraction: float = 0.01
+    event_filter_enabled: bool = True
+
+
 class Settings(BaseModel):
     env: RuntimeEnv = RuntimeEnv.VTS
     allocation: AllocationSettings = Field(default_factory=AllocationSettings)
     strategy_weights: StrategyWeightsSettings = Field(default_factory=StrategyWeightsSettings)
+    strategies: StrategySettings = Field(default_factory=StrategySettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
     kis: KISSettings

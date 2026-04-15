@@ -10,6 +10,31 @@ strategy_weights:
   trend_following: 0.25
   factor_investing: 0.45
 
+strategies:
+  min_position_fraction: 0.01
+  event_filter_enabled: true
+  dual_momentum:
+    lookback_days: 252
+    top_n: 10
+    rebalance_day_of_month: 1
+    absolute_momentum_floor: 0.0
+  trend_following:
+    ema_fast_period: 20
+    ema_slow_period: 60
+    atr_period: 14
+    rsi_period: 14
+    rsi_entry_floor: 30.0
+    target_volatility: 0.13
+    atr_stop_multiple: 2.0
+  factor_investing:
+    top_n: 25
+    rebalance_months: [1, 4, 7, 10]
+    rebalance_day_of_month: 1
+    value_weight: 0.25
+    quality_weight: 0.25
+    momentum_weight: 0.25
+    low_vol_weight: 0.25
+
 database:
   path: data/quantbot.db
   busy_timeout_ms: 5000
