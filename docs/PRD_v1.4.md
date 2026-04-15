@@ -312,6 +312,12 @@ Layer 5  모니터링 및 DR
 - [ ] VTS/PROD 토큰 분리
 - [ ] 토큰 값 비영속화
 
+운영 기본값:
+
+- runtime 시작 시 token warmup을 1회 즉시 수행합니다.
+- 런타임 token refresh는 `in-process` scheduler가 담당합니다.
+- startup warmup 또는 정기 refresh가 3회 연속 실패하면 신규 주문을 차단합니다.
+
 ## 5.3 전략 엔진 모듈
 
 - [ ] 전략별 표준 인터페이스 구현
@@ -357,6 +363,13 @@ Layer 5  모니터링 및 DR
 - [ ] 웹소켓 이벤트와 폴링 결과가 다르면 정합성 mismatch로 기록
 - [ ] mismatch 발생 시 신규 주문을 일시 중단하고 재동기화 수행
 - [ ] 브로커 스냅샷을 저장하여 DR 및 추적에 활용
+
+운영 기본값:
+
+- 스케줄러는 `in-process APScheduler`로 구동합니다.
+- polling은 시장 세션 인지형으로 동작하며, 현재 세션 우선순위는 `KR -> US`입니다.
+- polling 예외는 연속 실패 횟수로 관리하고 3회 연속 실패 시 신규 주문을 차단합니다.
+- 장 종료 전 미체결 취소는 국내 `15:25 KST`, 미국 `05:55 KST` 기본값을 사용합니다.
 
 ### 브로커 응답 정규화 계약
 
@@ -442,6 +455,21 @@ Phase 2 기준 canonical 상태는 아래와 같습니다.
 - [ ] 환율 영향 알림
 - [ ] 브로커 상태 mismatch 알림
 - [ ] writer queue backlog 알림
+
+헬스체크 기본 요약 기준:
+
+- `normal`
+  - scheduler running
+  - writer queue 정상
+  - token stale 아님
+  - polling stale 아님
+- `warning`
+  - token stale
+  - polling stale
+  - 마지막 오류 존재
+- `critical`
+  - `trading_blocked=True`
+  - writer queue degraded
 
 ---
 

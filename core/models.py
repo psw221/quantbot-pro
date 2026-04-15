@@ -56,6 +56,12 @@ class SubmitFailureClass(str, Enum):
     RECONCILE_HOLD = "reconcile_hold"
 
 
+class RuntimeHealthStatus(str, Enum):
+    NORMAL = "normal"
+    WARNING = "warning"
+    CRITICAL = "critical"
+
+
 @dataclass(slots=True)
 class BrokerOrderSnapshot:
     order_no: str
@@ -200,3 +206,15 @@ class SubmitFailureDecision:
     retryable: bool
     block_trading: bool = False
     require_reconciliation_hold: bool = False
+
+
+@dataclass(slots=True)
+class RuntimeState:
+    scheduler_running: bool = False
+    trading_blocked: bool = False
+    writer_queue_degraded: bool = False
+    health_status: RuntimeHealthStatus = RuntimeHealthStatus.NORMAL
+    last_token_refresh_at: datetime | None = None
+    last_poll_success_at: datetime | None = None
+    consecutive_poll_failures: int = 0
+    last_error: str | None = None

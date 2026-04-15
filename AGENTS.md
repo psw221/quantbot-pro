@@ -139,9 +139,11 @@ quantbot-pro/
 
 - `core/settings.py`만 설정을 로딩합니다.
 - `data/database.py`는 DB 연결, ORM, 세션, 초기화만 담당합니다.
+- `execution/runtime.py`는 scheduler orchestration, runtime state, token/poll/cancel/healthcheck job의 실행 순서만 담당합니다.
 - `execution/order_manager.py`는 주문 생성, 주문 전송, 브로커 상태 조회, 주문 상태 재동기화의 1차 책임을 가집니다.
 - `execution/fill_processor.py`는 체결 반영, 포지션/원장 갱신, FIFO 차감 처리만 담당합니다.
 - `execution/writer_queue.py`는 **모든 SQLite write의 단일 진입점**입니다.
+- `monitor/healthcheck.py`는 runtime 상태를 외부 점검용으로 요약만 합니다.
 - 하나의 파일에 설정 로딩, DB 세션, 외부 API 호출, 비즈니스 규칙을 혼합하지 않습니다.
 
 ---
@@ -359,6 +361,8 @@ PRAGMA foreign_keys=ON;
   2. mismatch 이벤트 로그 기록
   3. 브로커 스냅샷 저장
   4. fill re-sync 또는 복구 절차 실행
+- polling orchestration은 runtime/scheduler 계층에서 수행하고, 비교/기록은 `reconciliation.py`에 위임합니다.
+- polling 예외는 연속 실패 횟수로 관리하고, 3회 연속 실패 시 신규 주문 차단 상태로 전환합니다.
 
 ### 9.3 체결 반영 규칙
 
@@ -370,6 +374,13 @@ PRAGMA foreign_keys=ON;
   - `position_lots` 갱신
   - `positions` 갱신
   - `tax_events` 갱신 필요 시 반영
+
+### 9.5 운영 스케줄 기본값
+
+- scheduler는 `in-process APScheduler`를 기본값으로 사용합니다.
+- runtime 시작 시 token warmup을 1회 즉시 수행합니다.
+- 장 종료 전 미체결 취소 기본 시각은 국내 `15:25 KST`, 미국 `05:55 KST`입니다.
+- healthcheck는 `normal`, `warning`, `critical` 세 단계로 요약합니다.
 
 ### 9.4 주문 실패 분류 규칙
 
