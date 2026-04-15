@@ -608,6 +608,11 @@ with engine.begin() as conn:
 3. 필수 인덱스 생성
 4. 초기 검증 스크립트 실행
 
+현재 저장소 기준:
+
+- 초기화 엔트리포인트는 `scripts/init_db.py`를 사용합니다.
+- `scripts/init_db.py`는 문서상 SQLite 스키마 전체를 멱등적으로 생성하는 용도로 유지합니다.
+
 ### 마이그레이션 원칙
 
 1. `docs/DB_SCHEMA_v1.2.md` 수정
@@ -615,6 +620,11 @@ with engine.begin() as conn:
 3. `scripts/migrate_vYYYYMMDD.py` 작성
 4. VTS 환경 검증
 5. 실전 반영 전 백업 및 정합성 점검
+
+현재 저장소 기준:
+
+- migration placeholder는 `scripts/migrate_vYYYYMMDD.py` 경로 규칙으로 관리합니다.
+- 운영 중 스키마 변경은 `init_db.py` 재실행으로 대체하지 않고, dedicated migration 스크립트로 처리합니다.
 
 ---
 

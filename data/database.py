@@ -176,6 +176,25 @@ class Trade(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
 
 
+class PortfolioSnapshot(Base):
+    __tablename__ = "portfolio_snapshots"
+    __table_args__ = (Index("idx_snapshots_date", "snapshot_date"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    snapshot_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, unique=True)
+    total_value_krw: Mapped[float] = mapped_column(Float, nullable=False)
+    cash_krw: Mapped[float] = mapped_column(Float, nullable=False)
+    domestic_value_krw: Mapped[float] = mapped_column(Float, nullable=False)
+    overseas_value_krw: Mapped[float] = mapped_column(Float, nullable=False)
+    usd_krw_rate: Mapped[float] = mapped_column(Float, nullable=False)
+    daily_return: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    cumulative_return: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    drawdown: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    max_drawdown: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    position_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+
 class TaxEvent(Base):
     __tablename__ = "tax_events"
     __table_args__ = (Index("idx_tax_events_year_market", "tax_year", "market"),)
@@ -212,6 +231,23 @@ class TokenStore(Base):
     is_valid: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
 
+class EventCalendar(Base):
+    __tablename__ = "event_calendar"
+    __table_args__ = (Index("idx_event_calendar_date", "event_date", "market"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    event_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    event_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    event_type: Mapped[str] = mapped_column(String, nullable=False)
+    market: Mapped[str] = mapped_column(String, nullable=False)
+    ticker: Mapped[str | None] = mapped_column(String)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    impact: Mapped[str] = mapped_column(String, nullable=False, default="medium")
+    action: Mapped[str] = mapped_column(String, nullable=False)
+    is_processed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+
 class SystemLog(Base):
     __tablename__ = "system_logs"
     __table_args__ = (Index("idx_system_logs_level_date", "level", "created_at"),)
@@ -221,6 +257,25 @@ class SystemLog(Base):
     module: Mapped[str] = mapped_column(String, nullable=False)
     message: Mapped[str] = mapped_column(Text, nullable=False)
     extra_json: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+
+class BacktestResult(Base):
+    __tablename__ = "backtest_results"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    strategy: Mapped[str] = mapped_column(String, nullable=False)
+    market: Mapped[str] = mapped_column(String, nullable=False)
+    start_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    end_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    params_json: Mapped[str] = mapped_column(Text, nullable=False)
+    annual_return: Mapped[float] = mapped_column(Float, nullable=False)
+    sharpe_ratio: Mapped[float] = mapped_column(Float, nullable=False)
+    max_drawdown: Mapped[float] = mapped_column(Float, nullable=False)
+    win_rate: Mapped[float] = mapped_column(Float, nullable=False)
+    total_trades: Mapped[int] = mapped_column(Integer, nullable=False)
+    profit_factor: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    notes: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
 
 
