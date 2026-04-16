@@ -159,6 +159,7 @@ def test_dashboard_snapshot_aggregates_runtime_and_recent_db_rows(tmp_path) -> N
     assert snapshot.reconciliation_summary["mismatch_total"] == 2
     assert len(snapshot.recent_logs) == 1
     assert payload["health"]["status"] == snapshot.health.status
+    assert payload["health"]["details"]["status_source"] == "external_canonical"
 
 
 def test_dashboard_snapshot_handles_empty_read_models(tmp_path) -> None:
