@@ -43,6 +43,13 @@ logging:
   level: INFO
   directory: logs
 
+monitor:
+  telegram:
+    enabled: false
+    bot_token_env: TELEGRAM_BOT_TOKEN
+    chat_id_env: TELEGRAM_CHAT_ID
+    request_timeout_sec: 5
+
 kis:
   app_key_env: KIS_APP_KEY
   app_secret_env: KIS_APP_SECRET

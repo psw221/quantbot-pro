@@ -40,6 +40,23 @@ class LoggingSettings(BaseModel):
         return (ROOT_DIR / self.directory).resolve()
 
 
+class TelegramCredentials(BaseModel):
+    bot_token: SecretStr
+    chat_id: str
+
+
+class TelegramSettings(BaseModel):
+    enabled: bool = False
+    bot_token_env: str = "TELEGRAM_BOT_TOKEN"
+    chat_id_env: str = "TELEGRAM_CHAT_ID"
+    request_timeout_sec: int = 5
+    credentials: TelegramCredentials | None = None
+
+
+class MonitorSettings(BaseModel):
+    telegram: TelegramSettings = Field(default_factory=TelegramSettings)
+
+
 class KISEndpointSettings(BaseModel):
     rest_base_url: str
     websocket_base_url: str
@@ -160,6 +177,7 @@ class Settings(BaseModel):
     strategies: StrategySettings = Field(default_factory=StrategySettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
+    monitor: MonitorSettings = Field(default_factory=MonitorSettings)
     kis: KISSettings
     rebalancing: RebalancingSettings = Field(default_factory=RebalancingSettings)
     risk: RiskSettings = Field(default_factory=RiskSettings)
@@ -210,6 +228,37 @@ def _resolve_kis_credentials(kis_config: dict[str, Any], env_values: dict[str, s
     }
 
 
+def _resolve_telegram_credentials(monitor_config: dict[str, Any], env_values: dict[str, str]) -> dict[str, Any]:
+    telegram_config = monitor_config.get("telegram")
+    if not isinstance(telegram_config, dict):
+        return monitor_config
+
+    token_name = telegram_config.get("bot_token_env", "TELEGRAM_BOT_TOKEN")
+    chat_id_name = telegram_config.get("chat_id_env", "TELEGRAM_CHAT_ID")
+    bot_token = env_values.get(token_name, "").strip()
+    chat_id = env_values.get(chat_id_name, "").strip()
+
+    if not bot_token or not chat_id:
+        return {
+            **monitor_config,
+            "telegram": {
+                **telegram_config,
+                "credentials": None,
+            },
+        }
+
+    return {
+        **monitor_config,
+        "telegram": {
+            **telegram_config,
+            "credentials": {
+                "bot_token": bot_token,
+                "chat_id": chat_id,
+            },
+        },
+    }
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     config_data = _load_yaml_config(CONFIG_PATH)
@@ -221,6 +270,7 @@ def get_settings() -> Settings:
 
     config_data = {
         **config_data,
+        "monitor": _resolve_telegram_credentials(config_data.get("monitor", {}), env_values),
         "kis": _resolve_kis_credentials(kis_config, env_values),
     }
     return Settings.model_validate(config_data)
