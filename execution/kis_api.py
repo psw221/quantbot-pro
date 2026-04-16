@@ -19,6 +19,12 @@ def _mask_secret(value: str | None) -> str:
     return f"{value[:2]}{'*' * (len(value) - 4)}{value[-2:]}"
 
 
+def _secret_value(value: Any) -> str:
+    if hasattr(value, "get_secret_value"):
+        return str(value.get_secret_value())  # type: ignore[call-arg]
+    return str(value)
+
+
 class RateLimiter:
     def __init__(self, rate_limit_per_sec: int) -> None:
         self._rate_limit = rate_limit_per_sec
@@ -83,8 +89,12 @@ class KISApiClient:
             timeout=self.settings.kis.request_timeout_sec,
         )
         if not response.ok:
+            response_text = getattr(response, "text", "") or ""
+            detail = ""
+            if response_text:
+                detail = f": {response_text[:300]}"
             raise BrokerApiError(
-                f"KIS API request failed with status {response.status_code}",
+                f"KIS API request failed with status {response.status_code}{detail}",
                 status_code=response.status_code,
             )
 
@@ -107,6 +117,8 @@ class KISApiClient:
         return self.request(
             "GET",
             "/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl",
+            params=self._domestic_open_orders_params(),
+            headers={"tr_id": self._domestic_open_orders_tr_id()},
             access_token=access_token,
         )
 
@@ -114,6 +126,8 @@ class KISApiClient:
         return self.request(
             "GET",
             "/uapi/domestic-stock/v1/trading/inquire-balance",
+            params=self._domestic_balance_params(),
+            headers={"tr_id": self._domestic_balance_tr_id()},
             access_token=access_token,
         )
 
@@ -137,6 +151,8 @@ class KISApiClient:
         return self.request(
             "GET",
             "/uapi/domestic-stock/v1/trading/inquire-psbl-order",
+            params=self._domestic_cash_balance_params(),
+            headers={"tr_id": self._domestic_cash_balance_tr_id()},
             access_token=access_token,
         )
 
@@ -299,6 +315,54 @@ class KISApiClient:
         if market in {"KRX", "KR"}:
             return "KR"
         return default_market
+
+    def _account_base_params(self) -> dict[str, str]:
+        return {
+            "CANO": _secret_value(self.credentials.account_no),
+            "ACNT_PRDT_CD": _secret_value(self.credentials.product_code),
+        }
+
+    def _domestic_open_orders_params(self) -> dict[str, str]:
+        return {
+            **self._account_base_params(),
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": "",
+            "INQR_DVSN_1": "0",
+            "INQR_DVSN_2": "0",
+        }
+
+    def _domestic_balance_params(self) -> dict[str, str]:
+        return {
+            **self._account_base_params(),
+            "AFHR_FLPR_YN": "N",
+            "OFL_YN": "",
+            "INQR_DVSN": "02",
+            "UNPR_DVSN": "01",
+            "FUND_STTL_ICLD_YN": "N",
+            "FNCG_AMT_AUTO_RDPT_YN": "N",
+            "PRCS_DVSN": "01",
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": "",
+        }
+
+    def _domestic_cash_balance_params(self) -> dict[str, str]:
+        return {
+            **self._account_base_params(),
+            "PDNO": "005930",
+            "ORD_UNPR": "65500",
+            "ORD_DVSN": "01",
+            "CMA_EVLU_AMT_ICLD_YN": "Y",
+            "OVRS_ICLD_YN": "Y",
+        }
+
+    def _domestic_open_orders_tr_id(self) -> str:
+        return "VTTC8036R" if self.env == RuntimeEnv.VTS else "TTTC8036R"
+
+    def _domestic_balance_tr_id(self) -> str:
+        return "VTTC8434R" if self.env == RuntimeEnv.VTS else "TTTC8434R"
+
+    def _domestic_cash_balance_tr_id(self) -> str:
+        return "VTTC8908R" if self.env == RuntimeEnv.VTS else "TTTC8908R"
 
 
 def time_to_utc_now():

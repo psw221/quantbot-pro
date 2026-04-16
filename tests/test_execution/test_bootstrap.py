@@ -16,19 +16,21 @@ class DummyResponse:
         self._payload = payload
         self.status_code = status_code
         self.ok = status_code < 400
+        self.text = str(payload)
 
     def json(self) -> dict:
         return self._payload
 
 
 class DummySession:
-    def __init__(self, payload: dict) -> None:
+    def __init__(self, payload: dict, status_code: int = 200) -> None:
         self.payload = payload
+        self.status_code = status_code
         self.calls: list[dict] = []
 
     def request(self, **kwargs):
         self.calls.append(kwargs)
-        return DummyResponse(self.payload)
+        return DummyResponse(self.payload, status_code=self.status_code)
 
 
 def build_settings(tmp_path: Path) -> Settings:
@@ -166,6 +168,57 @@ def test_kis_client_uses_expected_base_url_and_headers(tmp_path: Path) -> None:
     assert call["headers"]["appkey"] == "key12345"
 
 
+def test_kis_client_supplies_domestic_balance_query_contract(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    dummy_session = DummySession({"rt_cd": "0", "output1": []})
+    client = KISApiClient(settings=settings, session=dummy_session)
+
+    client.get_account_snapshot("abc")
+
+    call = dummy_session.calls[0]
+    assert call["url"] == "https://example.test:29443/uapi/domestic-stock/v1/trading/inquire-balance"
+    assert call["headers"]["tr_id"] == "VTTC8434R"
+    assert call["params"]["CANO"] == "12345678"
+    assert call["params"]["ACNT_PRDT_CD"] == "01"
+    assert call["params"]["INQR_DVSN"] == "02"
+    assert call["params"]["PRCS_DVSN"] == "01"
+
+
+def test_kis_client_supplies_domestic_cash_query_contract(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    dummy_session = DummySession({"rt_cd": "0", "output": {"ord_psbl_cash": "150000"}})
+    client = KISApiClient(settings=settings, session=dummy_session)
+
+    client.get_cash_balance("abc")
+
+    call = dummy_session.calls[0]
+    assert call["url"] == "https://example.test:29443/uapi/domestic-stock/v1/trading/inquire-psbl-order"
+    assert call["headers"]["tr_id"] == "VTTC8908R"
+    assert call["params"]["CANO"] == "12345678"
+    assert call["params"]["ACNT_PRDT_CD"] == "01"
+    assert call["params"]["PDNO"] == "005930"
+    assert call["params"]["ORD_UNPR"] == "65500"
+    assert call["params"]["ORD_DVSN"] == "01"
+    assert call["params"]["CMA_EVLU_AMT_ICLD_YN"] == "Y"
+    assert call["params"]["OVRS_ICLD_YN"] == "Y"
+
+
+def test_kis_client_supplies_domestic_open_orders_query_contract(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    dummy_session = DummySession({"rt_cd": "0", "output": []})
+    client = KISApiClient(settings=settings, session=dummy_session)
+
+    client.list_open_orders("abc")
+
+    call = dummy_session.calls[0]
+    assert call["url"] == "https://example.test:29443/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl"
+    assert call["headers"]["tr_id"] == "VTTC8036R"
+    assert call["params"]["CANO"] == "12345678"
+    assert call["params"]["ACNT_PRDT_CD"] == "01"
+    assert call["params"]["INQR_DVSN_1"] == "0"
+    assert call["params"]["INQR_DVSN_2"] == "0"
+
+
 def test_kis_client_builds_polling_snapshot(tmp_path: Path) -> None:
     settings = build_settings(tmp_path)
     client = KISApiClient(settings=settings, session=DummySession({"rt_cd": "0"}))
@@ -254,3 +307,21 @@ def test_kis_client_normalizes_failed_order_result(tmp_path: Path) -> None:
     assert result.accepted is False
     assert result.error_code == "ERR001"
     assert result.error_message == "failed"
+
+
+def test_kis_client_includes_response_body_excerpt_on_http_error(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    client = KISApiClient(
+        settings=settings,
+        session=DummySession({"msg_cd": "ERR500", "msg1": "server error"}, status_code=500),
+    )
+
+    try:
+        client.request("GET", "/broken", access_token="abc")
+    except Exception as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("expected exception")
+
+    assert "status" in message
+    assert "server error" in message
