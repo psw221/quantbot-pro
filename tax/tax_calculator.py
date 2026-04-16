@@ -9,7 +9,7 @@ from typing import Any, Callable, Iterator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from data.database import TaxEvent, Trade, get_read_session
+from data.database import PositionLot, TaxEvent, Trade, get_read_session
 
 
 @dataclass(slots=True)
@@ -21,6 +21,7 @@ class _Lot:
     trade_fx_rate: float | None
     settlement_fx_rate: float | None
     fx_rate_source: str | None
+    opened_at: datetime
 
 
 class TaxCalculator:
@@ -64,53 +65,86 @@ class TaxCalculator:
         }
 
     def build_trade_report(self, year: int, market: str | None = None) -> list[dict[str, Any]]:
+        market_filter = None if market is None else market.upper()
+        year_start = datetime(year, 1, 1)
+        year_end = datetime(year + 1, 1, 1)
+
         with self._session_scope() as session:
-            trades = list(
+            sell_trades = list(
                 session.scalars(
                     select(Trade)
-                    .where(Trade.executed_at >= datetime(year, 1, 1), Trade.executed_at < datetime(year + 1, 1, 1))
+                    .where(
+                        Trade.side == "sell",
+                        Trade.executed_at >= year_start,
+                        Trade.executed_at < year_end,
+                    )
                     .order_by(Trade.executed_at, Trade.id)
                 )
             )
             tax_events = {
                 event.trade_id: event
-                for event in session.scalars(select(TaxEvent).where(TaxEvent.tax_year == year).order_by(TaxEvent.sell_date, TaxEvent.id))
+                for event in session.scalars(
+                    select(TaxEvent).where(TaxEvent.tax_year == year).order_by(TaxEvent.sell_date, TaxEvent.id)
+                )
+            }
+            position_lots = list(session.scalars(select(PositionLot).order_by(PositionLot.opened_at, PositionLot.id)))
+            source_trades = {
+                trade.id: trade
+                for trade in session.scalars(select(Trade).where(Trade.executed_at < year_end).order_by(Trade.executed_at, Trade.id))
             }
 
-        if market is not None:
-            trades = [trade for trade in trades if trade.market == market]
+        if market_filter is not None:
+            sell_trades = [trade for trade in sell_trades if trade.market == market_filter]
+            position_lots = [lot for lot in position_lots if lot.market == market_filter]
 
-        lots_by_key: dict[tuple[str, str, str], deque[_Lot]] = defaultdict(deque)
+        pending_lots_by_key = self._build_pending_lots(position_lots, source_trades)
+        active_lots_by_key: dict[tuple[str, str, str], deque[_Lot]] = defaultdict(deque)
         report_rows: list[dict[str, Any]] = []
 
-        for trade in trades:
+        for trade in sell_trades:
             key = (trade.ticker, trade.market, trade.strategy)
-            if trade.side == "buy":
-                lots_by_key[key].append(
-                    _Lot(
-                        quantity=trade.quantity,
-                        remaining_quantity=trade.quantity,
-                        price=trade.price,
-                        currency=trade.currency,
-                        trade_fx_rate=trade.trade_fx_rate,
-                        settlement_fx_rate=trade.settlement_fx_rate,
-                        fx_rate_source=trade.fx_rate_source,
-                    )
-                )
-                continue
-
-            if trade.side != "sell":
-                continue
+            active_lots = active_lots_by_key[key]
+            self._activate_fifo_lots(active_lots, pending_lots_by_key[key], trade.executed_at)
 
             tax_event = tax_events.get(trade.id)
             if tax_event is not None:
                 report_rows.append(self._build_tax_event_row(trade, tax_event))
-                self._consume_fifo_lots(lots_by_key[key], trade.quantity)
+                self._consume_fifo_lots(active_lots, trade.quantity)
                 continue
 
-            report_rows.append(self._build_fifo_row(trade, lots_by_key[key]))
+            report_rows.append(self._build_fifo_row(trade, active_lots))
 
         return report_rows
+
+    def _build_pending_lots(
+        self,
+        position_lots: list[PositionLot],
+        source_trades: dict[int, Trade],
+    ) -> dict[tuple[str, str, str], deque[_Lot]]:
+        pending_lots_by_key: dict[tuple[str, str, str], deque[_Lot]] = defaultdict(deque)
+
+        for position_lot in position_lots:
+            source_trade = source_trades.get(position_lot.source_trade_id)
+            currency = "KRW" if source_trade is None else source_trade.currency
+            fx_rate_source = None if source_trade is None else source_trade.fx_rate_source
+            pending_lots_by_key[(position_lot.ticker, position_lot.market, position_lot.strategy)].append(
+                _Lot(
+                    quantity=position_lot.open_quantity,
+                    remaining_quantity=position_lot.open_quantity,
+                    price=position_lot.open_price,
+                    currency=currency,
+                    trade_fx_rate=position_lot.open_trade_fx_rate,
+                    settlement_fx_rate=position_lot.open_settlement_fx_rate,
+                    fx_rate_source=fx_rate_source,
+                    opened_at=position_lot.opened_at,
+                )
+            )
+
+        return pending_lots_by_key
+
+    def _activate_fifo_lots(self, active_lots: deque[_Lot], pending_lots: deque[_Lot], sell_executed_at: datetime) -> None:
+        while pending_lots and pending_lots[0].opened_at <= sell_executed_at:
+            active_lots.append(pending_lots.popleft())
 
     def _build_tax_event_row(self, trade: Trade, tax_event: TaxEvent) -> dict[str, Any]:
         sell_fx_rate = self._resolve_fx_rate(tax_event.sell_settlement_fx_rate, tax_event.sell_trade_fx_rate)

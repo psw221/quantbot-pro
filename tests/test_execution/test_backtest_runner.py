@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 
 from data.database import BacktestResult, SystemLog, get_session_factory, init_db
@@ -123,6 +124,85 @@ def test_backtest_runner_rejects_invalid_period(tmp_path) -> None:
             )
         except ValueError as exc:
             assert "end_date" in str(exc)
+        else:
+            raise AssertionError("expected ValueError")
+    finally:
+        writer_queue.stop()
+
+
+def test_backtest_runner_persists_actual_engine_metadata(tmp_path, monkeypatch) -> None:
+    settings = build_settings(tmp_path)
+    init_db(settings)
+    writer_queue = WriterQueue()
+    writer_queue.start()
+
+    try:
+        runner = BacktestRunner(
+            data_provider=FakeStrategyDataProvider(),
+            writer_queue=writer_queue,
+            operations_recorder=OperationsRecorder(writer_queue),
+            settings=settings,
+        )
+
+        def fake_run_engine(*args, **kwargs):
+            return {
+                "annual_return": 0.12,
+                "sharpe_ratio": 1.5,
+                "max_drawdown": -0.08,
+                "win_rate": 0.6,
+                "total_trades": 4,
+                "profit_factor": 1.9,
+                "engine": "vectorbt",
+            }
+
+        monkeypatch.setattr(runner, "_run_engine", fake_run_engine)
+
+        result = runner.run(
+            "dual_momentum",
+            "US",
+            datetime(2026, 1, 1, tzinfo=UTC),
+            datetime(2026, 1, 10, tzinfo=UTC),
+            universe=["AAPL", "MSFT"],
+            persist=True,
+        )
+    finally:
+        writer_queue.stop()
+
+    assert result.engine == "vectorbt"
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        row = session.query(BacktestResult).one()
+        assert row.notes == "engine=vectorbt"
+
+        log_row = session.query(SystemLog).one()
+        payload = json.loads(log_row.extra_json or "{}")
+        assert payload["engine"] == "vectorbt"
+
+
+def test_backtest_runner_rejects_empty_universe(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    init_db(settings)
+    writer_queue = WriterQueue()
+    writer_queue.start()
+
+    try:
+        runner = BacktestRunner(
+            data_provider=FakeStrategyDataProvider(),
+            writer_queue=writer_queue,
+            operations_recorder=OperationsRecorder(writer_queue),
+            settings=settings,
+        )
+        try:
+            runner.run(
+                "dual_momentum",
+                "US",
+                datetime(2026, 1, 1, tzinfo=UTC),
+                datetime(2026, 1, 10, tzinfo=UTC),
+                universe=[],
+            )
+        except ValueError as exc:
+            assert "universe" in str(exc)
         else:
             raise AssertionError("expected ValueError")
     finally:

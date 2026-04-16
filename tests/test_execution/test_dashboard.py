@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from data.database import (
+    BacktestResult,
     Order,
     OrderExecution,
     PortfolioSnapshot,
@@ -133,6 +134,35 @@ def test_dashboard_snapshot_aggregates_runtime_and_recent_db_rows(tmp_path) -> N
             )
         )
         session.add(
+            ReconciliationRun(
+                run_type="manual_restore",
+                source_env="vts",
+                started_at=reference_now - timedelta(hours=1),
+                completed_at=reference_now - timedelta(hours=1) + timedelta(minutes=2),
+                mismatch_count=1,
+                status="warning",
+                summary_json="{}",
+                created_at=utc_now(),
+            )
+        )
+        session.add(
+            BacktestResult(
+                strategy="dual_momentum",
+                market="US",
+                start_date=reference_now - timedelta(days=30),
+                end_date=reference_now - timedelta(days=1),
+                params_json='{"universe":["AAPL","MSFT"]}',
+                annual_return=0.12,
+                sharpe_ratio=1.4,
+                max_drawdown=-0.08,
+                win_rate=0.6,
+                total_trades=5,
+                profit_factor=1.8,
+                notes="engine=vectorbt",
+                created_at=reference_now - timedelta(minutes=10),
+            )
+        )
+        session.add(
             SystemLog(
                 level="ERROR",
                 module="execution.runtime",
@@ -155,11 +185,24 @@ def test_dashboard_snapshot_aggregates_runtime_and_recent_db_rows(tmp_path) -> N
     assert len(snapshot.recent_trades) == 1
     assert snapshot.latest_portfolio_snapshot is not None
     assert snapshot.latest_portfolio_snapshot["position_count"] == 7
-    assert snapshot.reconciliation_summary["warning_count"] == 1
-    assert snapshot.reconciliation_summary["mismatch_total"] == 2
+    assert snapshot.reconciliation_summary["warning_count"] == 2
+    assert snapshot.reconciliation_summary["mismatch_total"] == 3
+    assert snapshot.reconciliation_summary["latest_run_type"] == "manual_restore"
+    assert len(snapshot.recent_manual_restores) == 1
+    assert snapshot.recent_manual_restores[0]["status"] == "warning"
+    assert len(snapshot.recent_backtests) == 1
+    assert snapshot.recent_backtests[0]["notes"] == "engine=vectorbt"
+    assert snapshot.operational_summary["health_status"] == snapshot.health.status.value
+    assert snapshot.operational_summary["trading_blocked"] is False
+    assert snapshot.operational_summary["has_recent_mismatch"] is True
+    assert snapshot.operational_summary["recent_manual_restore_count"] == 1
+    assert snapshot.operational_summary["latest_manual_restore_status"] == "warning"
+    assert snapshot.operational_summary["recent_backtest_count"] == 1
+    assert snapshot.operational_summary["latest_backtest_strategy"] == "dual_momentum"
     assert len(snapshot.recent_logs) == 1
     assert payload["health"]["status"] == snapshot.health.status
     assert payload["health"]["details"]["status_source"] == "external_canonical"
+    assert payload["operational_summary"]["latest_reconciliation_run_type"] == "manual_restore"
 
 
 def test_dashboard_snapshot_handles_empty_read_models(tmp_path) -> None:
@@ -174,4 +217,9 @@ def test_dashboard_snapshot_handles_empty_read_models(tmp_path) -> None:
     assert snapshot.recent_trades == []
     assert snapshot.latest_portfolio_snapshot is None
     assert snapshot.reconciliation_summary["run_count"] == 0
+    assert snapshot.recent_manual_restores == []
+    assert snapshot.recent_backtests == []
+    assert snapshot.operational_summary["recent_manual_restore_count"] == 0
+    assert snapshot.operational_summary["recent_backtest_count"] == 0
+    assert snapshot.operational_summary["has_recent_mismatch"] is False
     assert snapshot.recent_logs == []

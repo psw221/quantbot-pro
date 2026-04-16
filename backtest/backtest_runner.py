@@ -90,7 +90,7 @@ class BacktestRunner:
             win_rate=metrics["win_rate"],
             total_trades=metrics["total_trades"],
             profit_factor=metrics["profit_factor"],
-            engine="fallback",
+            engine=str(metrics.get("engine", "fallback")),
         )
 
         if persist:

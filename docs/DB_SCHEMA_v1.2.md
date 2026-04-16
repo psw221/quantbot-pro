@@ -428,6 +428,11 @@ CREATE TABLE backtest_results (
 );
 ```
 
+운영 메모:
+
+- `backtest_results.notes`에는 민감정보 없이 실행 엔진 메타데이터 같은 최소 운영 메모만 저장합니다.
+- 현재 저장소 기준 기본 메모 형식은 `engine=<vectorbt|fallback>`입니다.
+
 ## 5.13 `system_logs`
 
 ```sql
@@ -440,6 +445,12 @@ CREATE TABLE system_logs (
     created_at  TEXT NOT NULL
 );
 ```
+
+운영 메모:
+
+- `system_logs.extra_json`은 운영 추적용 최소 메타데이터만 저장합니다.
+- 계좌번호, API Key, raw broker payload, 인증 헤더 등 민감정보는 저장하지 않습니다.
+- restore/backtest/monitoring 흐름에서 사용하는 `extra_json`도 writer queue 경유 recorder가 sanitize한 값만 기록합니다.
 
 ## 5.14 `reconciliation_runs`
 

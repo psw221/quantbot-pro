@@ -8,6 +8,8 @@ from core.models import ExecutionFill, Signal
 from data.database import (
     Order,
     OrderExecution,
+    Position,
+    PositionLot,
     Signal as SignalRow,
     TaxEvent,
     Trade,
@@ -223,27 +225,34 @@ def test_tax_calculator_falls_back_to_trade_fx_when_settlement_fx_missing(tmp_pa
         )
         session.add_all([buy_trade, sell_trade])
         session.flush()
+        position = Position(
+            ticker="MSFT",
+            market="US",
+            strategy="factor_investing",
+            quantity=0,
+            avg_cost=0,
+            current_price=60,
+            highest_price=60,
+            entry_date=buy_trade.executed_at,
+            updated_at=buy_trade.executed_at,
+        )
+        session.add(position)
+        session.flush()
         session.add(
-            TaxEvent(
-                trade_id=sell_trade.id,
+            PositionLot(
+                position_id=position.id,
+                strategy="factor_investing",
                 ticker="MSFT",
                 market="US",
-                sell_date=sell_trade.executed_at,
-                quantity=2,
-                sell_price=60,
-                cost_basis=100,
-                gain_loss_usd=20,
-                gain_loss_krw=20,
-                buy_trade_fx_rate=1300,
-                buy_settlement_date=None,
-                buy_settlement_fx_rate=None,
-                sell_trade_fx_rate=1320,
-                sell_settlement_date=None,
-                sell_settlement_fx_rate=None,
-                fx_rate_source="fallback",
-                taxable_gain=20,
-                tax_year=sell_trade.executed_at.year,
-                is_included_in_report=False,
+                open_quantity=2,
+                remaining_quantity=0,
+                open_price=50,
+                open_trade_fx_rate=1300,
+                open_settlement_date=buy_trade.settlement_date,
+                open_settlement_fx_rate=None,
+                opened_at=buy_trade.executed_at,
+                source_trade_id=buy_trade.id,
+                updated_at=sell_trade.executed_at,
             )
         )
         session.commit()
@@ -252,6 +261,7 @@ def test_tax_calculator_falls_back_to_trade_fx_when_settlement_fx_missing(tmp_pa
     report = calculator.build_trade_report(datetime.now(timezone.utc).year, market="US")
 
     assert len(report) == 1
+    assert report[0]["source"] == "fifo_reconstructed"
     assert report[0]["buy_fx_rate"] == 1300
     assert report[0]["sell_fx_rate"] == 1320
     assert report[0]["realized_gain_loss_krw"] == 28400
@@ -319,3 +329,178 @@ def test_tax_calculator_reconstructs_fifo_for_kr_and_keeps_fx_null(tmp_path) -> 
     assert report[0]["sell_fx_rate"] is None
     assert report[0]["realized_gain_loss_krw"] == 14400
     assert summary["taxable_gain_krw"] == 15000
+
+
+def test_tax_calculator_fifo_fallback_prefers_position_lot_and_sell_settlement_fx(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    init_db(settings)
+    session_factory = get_session_factory()
+    buy_time = datetime(2026, 1, 2, tzinfo=timezone.utc)
+    sell_time = datetime(2026, 2, 2, tzinfo=timezone.utc)
+
+    with session_factory() as session:
+        signal_row = SignalRow(
+            ticker="NVDA",
+            market="US",
+            strategy="dual_momentum",
+            action="buy",
+            strength=1.0,
+            reason="fixture",
+            status="ordered",
+            generated_at=buy_time,
+            processed_at=buy_time,
+        )
+        session.add(signal_row)
+        session.flush()
+        buy_order = Order(
+            client_order_id="nvda-buy",
+            kis_order_no="NB1",
+            signal_id=signal_row.id,
+            ticker="NVDA",
+            market="US",
+            strategy="dual_momentum",
+            side="buy",
+            order_type="limit",
+            quantity=2,
+            price=50,
+            status="filled",
+            submitted_at=buy_time,
+            updated_at=buy_time,
+        )
+        sell_order = Order(
+            client_order_id="nvda-sell",
+            kis_order_no="NS1",
+            signal_id=signal_row.id,
+            ticker="NVDA",
+            market="US",
+            strategy="dual_momentum",
+            side="sell",
+            order_type="limit",
+            quantity=2,
+            price=60,
+            status="filled",
+            submitted_at=sell_time,
+            updated_at=sell_time,
+        )
+        session.add_all([buy_order, sell_order])
+        session.flush()
+        buy_execution = OrderExecution(
+            order_id=buy_order.id,
+            execution_no="nvda-buy-exec",
+            fill_seq=1,
+            filled_quantity=2,
+            filled_price=50,
+            fee=0,
+            tax=0,
+            currency="USD",
+            trade_fx_rate=1300,
+            settlement_date=buy_time,
+            settlement_fx_rate=1310,
+            fx_rate_source="fixture",
+            executed_at=buy_time,
+            created_at=utc_now(),
+        )
+        sell_execution = OrderExecution(
+            order_id=sell_order.id,
+            execution_no="nvda-sell-exec",
+            fill_seq=1,
+            filled_quantity=2,
+            filled_price=60,
+            fee=0,
+            tax=0,
+            currency="USD",
+            trade_fx_rate=1320,
+            settlement_date=sell_time,
+            settlement_fx_rate=1330,
+            fx_rate_source="fixture",
+            executed_at=sell_time,
+            created_at=utc_now(),
+        )
+        session.add_all([buy_execution, sell_execution])
+        session.flush()
+        buy_trade = Trade(
+            order_id=buy_order.id,
+            execution_id=buy_execution.id,
+            ticker="NVDA",
+            market="US",
+            strategy="dual_momentum",
+            side="buy",
+            quantity=2,
+            price=50,
+            amount=100,
+            fee=0,
+            tax=0,
+            net_amount=100,
+            currency="USD",
+            trade_fx_rate=1300,
+            settlement_date=buy_time,
+            settlement_fx_rate=1310,
+            fx_rate_source="fixture",
+            signal_id=None,
+            executed_at=buy_time,
+            created_at=utc_now(),
+        )
+        sell_trade = Trade(
+            order_id=sell_order.id,
+            execution_id=sell_execution.id,
+            ticker="NVDA",
+            market="US",
+            strategy="dual_momentum",
+            side="sell",
+            quantity=2,
+            price=60,
+            amount=120,
+            fee=0,
+            tax=0,
+            net_amount=120,
+            currency="USD",
+            trade_fx_rate=1320,
+            settlement_date=sell_time,
+            settlement_fx_rate=1330,
+            fx_rate_source="fixture",
+            signal_id=None,
+            executed_at=sell_time,
+            created_at=utc_now(),
+        )
+        session.add_all([buy_trade, sell_trade])
+        session.flush()
+        position = Position(
+            ticker="NVDA",
+            market="US",
+            strategy="dual_momentum",
+            quantity=0,
+            avg_cost=0,
+            current_price=60,
+            highest_price=60,
+            entry_date=buy_time,
+            updated_at=sell_time,
+        )
+        session.add(position)
+        session.flush()
+        session.add(
+            PositionLot(
+                position_id=position.id,
+                strategy="dual_momentum",
+                ticker="NVDA",
+                market="US",
+                open_quantity=2,
+                remaining_quantity=0,
+                open_price=50,
+                open_trade_fx_rate=1300,
+                open_settlement_date=buy_time,
+                open_settlement_fx_rate=1310,
+                opened_at=buy_time,
+                source_trade_id=buy_trade.id,
+                updated_at=sell_time,
+            )
+        )
+        session.commit()
+
+    calculator = TaxCalculator()
+    report = calculator.build_trade_report(2026, market="US")
+
+    assert len(report) == 1
+    assert report[0]["source"] == "fifo_reconstructed"
+    assert report[0]["buy_fx_rate"] == 1310
+    assert report[0]["sell_fx_rate"] == 1330
+    assert report[0]["realized_gain_loss_krw"] == 28600

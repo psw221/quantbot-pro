@@ -32,9 +32,17 @@ class ReconciliationService:
         open_orders: list[BrokerOrderSnapshot],
         cash_available: float,
         missing_fills: list[ExecutionFill] | None = None,
+        run_type: str = "scheduled_poll",
     ) -> ReconciliationResult:
         future = self.writer_queue.submit(
-            lambda session: self._reconcile(session, broker_positions, open_orders, cash_available, missing_fills or []),
+            lambda session: self._reconcile(
+                session,
+                broker_positions,
+                open_orders,
+                cash_available,
+                missing_fills or [],
+                run_type=run_type,
+            ),
             description="reconcile broker state",
         )
         return future.result()
@@ -44,15 +52,17 @@ class ReconciliationService:
         snapshot: BrokerPollingSnapshot,
         *,
         missing_fills: list[ExecutionFill] | None = None,
+        run_type: str = "scheduled_poll",
     ) -> ReconciliationResult:
         return self.reconcile(
             broker_positions=snapshot.positions,
             open_orders=snapshot.open_orders,
             cash_available=snapshot.cash_available,
             missing_fills=missing_fills,
+            run_type=run_type,
         )
 
-    def _reconcile(self, session, broker_positions, open_orders, cash_available, missing_fills) -> ReconciliationResult:
+    def _reconcile(self, session, broker_positions, open_orders, cash_available, missing_fills, *, run_type: str) -> ReconciliationResult:
         mismatches: list[ReconciliationMismatch] = []
 
         internal_positions = {
@@ -113,7 +123,7 @@ class ReconciliationService:
         status = ReconciliationStatus.RECONCILED if not mismatches else ReconciliationStatus.MISMATCH_DETECTED
         session.add(
             ReconciliationRun(
-                run_type="scheduled_poll",
+                run_type=run_type,
                 source_env=self.settings.env.value,
                 started_at=utc_now(),
                 completed_at=utc_now(),
@@ -121,6 +131,7 @@ class ReconciliationService:
                 status="ok" if not mismatches else "warning",
                 summary_json=json.dumps(
                     {
+                        "run_type": run_type,
                         "cash_available": cash_available,
                         "mismatches": [mismatch.detail for mismatch in mismatches],
                     }

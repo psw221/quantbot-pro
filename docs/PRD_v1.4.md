@@ -471,6 +471,31 @@ Phase 2 기준 canonical 상태는 아래와 같습니다.
   - `trading_blocked=True`
   - writer queue degraded
 
+운영 계약:
+
+- 헬스체크는 external canonical health 기준을 사용하며 `normal`, `warning`, `critical`만 외부 표면으로 노출합니다.
+- 대시보드는 read-only snapshot 계층으로 유지하고 아래 항목을 함께 요약합니다.
+  - open orders
+  - recent trades
+  - latest portfolio snapshot
+  - recent reconciliation summary
+  - recent system logs
+  - recent manual restore runs
+  - recent backtest results
+  - blocked / stale / mismatch 운영 상태 요약
+- Telegram notifier는 상태 판단을 하지 않고, 상위 계층이 확정한 운영 이벤트를 메시지 포맷/송신만 수행합니다.
+- 최소 운영 이벤트 표면:
+  - `token_refresh_failure`
+  - `trading_blocked`
+  - `reconcile_hold`
+  - `writer_queue_degraded`
+  - `polling_mismatch`
+  - `pre_close_cancel_failure`
+  - `dr_restore_started`
+  - `dr_restore_completed`
+  - `dr_restore_failed`
+  - `fx_alert`
+
 ---
 
 ## 6. 비기능 요구사항
@@ -518,7 +543,18 @@ Phase 2 기준 canonical 상태는 아래와 같습니다.
 Phase 2 범위:
 
 - `order_executions`, `trades`, `position_lots`에 `settlement_date`, `settlement_fx_rate`, `trade_fx_rate`, `fx_rate_source`를 유지합니다.
-- 매도 체결 시 `tax_events` 생성은 hook 수준까지 포함할 수 있으나, 최종 세금 계산 정책 완성은 Phase 3 이후로 둡니다.
+- 매도 체결 시 `tax_events` 생성은 hook 수준까지 포함할 수 있으며, Phase 3 범위의 세금 기능은 추산 및 리포트까지로 둡니다.
+- 최종 신고 정책 완성 및 신고 자동화는 후속 단계로 둡니다.
+
+Phase 3 운영 기준:
+
+- canonical source는 `tax_events`, `trades`, `position_lots`입니다.
+- 미국 매도는 `tax_events`를 우선 사용하고, 누락 시 FIFO fallback을 허용합니다.
+- KR 거래는 FX `NULL`을 허용합니다.
+- FX 우선순위:
+  - sell: `settlement_fx_rate -> trade_fx_rate`
+  - buy: `buy_settlement_fx_rate -> buy_trade_fx_rate`
+- Phase 3의 세금 기능은 추산 및 리포트까지로 제한하며, 신고 자동화는 범위 밖으로 둡니다.
 
 ### 6.6 장애 복구 (DR)
 
@@ -528,6 +564,14 @@ Phase 2 범위:
 - [ ] 브로커 스냅샷 기준 재동기화 지원
 - [ ] 복구 후 소액 테스트 주문 검증
 
+Phase 3 운영 기준:
+
+- `restore_portfolio.py`는 기본값을 `dry-run`으로 두는 복구 판단 및 기록 도구로 유지합니다.
+- `dry-run`은 내부 원장과 broker snapshot의 차이 계산만 수행하고 DB write를 하지 않습니다.
+- `apply`는 `trading_blocked=True` 확인 후에만 수행합니다.
+- `apply`는 `manual_restore` reconciliation run, broker snapshot 저장, system log 기록, optional portfolio snapshot upsert까지만 수행합니다.
+- direct fill insert, direct order correction, direct lot correction은 허용하지 않습니다.
+
 ---
 
 ## 7. 개발 로드맵
@@ -536,8 +580,8 @@ Phase 2 범위:
 |------|------|-------------|------|
 | Phase 1 | 4주 | KIS 연동(VTS), Token 자동 갱신, DB/WAL/Writer Queue, 데이터 수집 | 계획 |
 | Phase 2 | 5주 | 전략 구현, 백테스트, 포지션 사이징, 리스크 관리, 브로커 폴링 동기화 | 계획 |
-| Phase 3 | 3주 | 주문 실행, 부분체결 처리, 대시보드, 알림, 세금 추산 | 계획 |
-| Phase 4 | 4주 | 소액 실전 운용, DR 검증, 정합성/성능 보완 | 계획 |
+| Phase 3 | 3주 | 대시보드, 알림, 세금 추산, DR 복구 지원, 백테스트 결과 저장/운영 가시성 | 완료 |
+| Phase 4 | 4주 | 소액 실전 운용, 자동 복구 정책 정교화, 정합성/성능 보완 | 계획 |
 | Phase 5 | 지속 | 전략 최적화, 환헤지 검토, 자본 확대 | 예정 |
 
 ---

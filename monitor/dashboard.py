@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
-from data.database import Order, PortfolioSnapshot, ReconciliationRun, SystemLog, Trade, get_read_session
+from data.database import BacktestResult, Order, PortfolioSnapshot, ReconciliationRun, SystemLog, Trade, get_read_session
 from monitor.healthcheck import HealthSnapshot, build_health_snapshot
 
 
@@ -23,6 +23,9 @@ class DashboardSnapshot:
     recent_trades: list[dict[str, Any]]
     latest_portfolio_snapshot: dict[str, Any] | None
     reconciliation_summary: dict[str, Any]
+    recent_manual_restores: list[dict[str, Any]]
+    recent_backtests: list[dict[str, Any]]
+    operational_summary: dict[str, Any]
     recent_logs: list[dict[str, Any]]
 
 
@@ -33,6 +36,8 @@ def build_dashboard_snapshot(
     now: datetime | None = None,
     max_open_orders: int = 20,
     max_recent_trades: int = 20,
+    max_recent_manual_restores: int = 10,
+    max_recent_backtests: int = 10,
     max_recent_logs: int = 20,
     recent_reconciliation_window: timedelta = timedelta(days=1),
 ) -> DashboardSnapshot:
@@ -47,6 +52,8 @@ def build_dashboard_snapshot(
             session,
             since=reference_now - recent_reconciliation_window,
         )
+        recent_manual_restores = _load_recent_manual_restores(session, limit=max_recent_manual_restores)
+        recent_backtests = _load_recent_backtests(session, limit=max_recent_backtests)
         recent_logs = _load_recent_logs(session, limit=max_recent_logs)
 
     return DashboardSnapshot(
@@ -56,6 +63,15 @@ def build_dashboard_snapshot(
         recent_trades=recent_trades,
         latest_portfolio_snapshot=latest_portfolio_snapshot,
         reconciliation_summary=reconciliation_summary,
+        recent_manual_restores=recent_manual_restores,
+        recent_backtests=recent_backtests,
+        operational_summary=_build_operational_summary(
+            health=health,
+            reconciliation_summary=reconciliation_summary,
+            recent_manual_restores=recent_manual_restores,
+            recent_backtests=recent_backtests,
+            latest_portfolio_snapshot=latest_portfolio_snapshot,
+        ),
         recent_logs=recent_logs,
     )
 
@@ -145,6 +161,84 @@ def _load_reconciliation_summary(session: Session, *, since: datetime) -> dict[s
         "mismatch_total": mismatch_total,
         "latest_status": None if latest_run is None else latest_run.status,
         "latest_started_at": None if latest_run is None else latest_run.started_at,
+        "latest_run_type": None if latest_run is None else latest_run.run_type,
+    }
+
+
+def _load_recent_manual_restores(session: Session, *, limit: int) -> list[dict[str, Any]]:
+    rows = session.scalars(
+        select(ReconciliationRun)
+        .where(ReconciliationRun.run_type == "manual_restore")
+        .order_by(desc(ReconciliationRun.started_at), desc(ReconciliationRun.id))
+        .limit(limit)
+    )
+    return [
+        {
+            "reconciliation_run_id": row.id,
+            "status": row.status,
+            "mismatch_count": row.mismatch_count,
+            "started_at": row.started_at,
+            "completed_at": row.completed_at,
+            "source_env": row.source_env,
+        }
+        for row in rows
+    ]
+
+
+def _load_recent_backtests(session: Session, *, limit: int) -> list[dict[str, Any]]:
+    rows = session.scalars(select(BacktestResult).order_by(desc(BacktestResult.created_at), desc(BacktestResult.id)).limit(limit))
+    return [
+        {
+            "backtest_result_id": row.id,
+            "strategy": row.strategy,
+            "market": row.market,
+            "start_date": row.start_date,
+            "end_date": row.end_date,
+            "annual_return": row.annual_return,
+            "sharpe_ratio": row.sharpe_ratio,
+            "max_drawdown": row.max_drawdown,
+            "win_rate": row.win_rate,
+            "total_trades": row.total_trades,
+            "profit_factor": row.profit_factor,
+            "notes": row.notes,
+            "created_at": row.created_at,
+        }
+        for row in rows
+    ]
+
+
+def _build_operational_summary(
+    *,
+    health: HealthSnapshot,
+    reconciliation_summary: dict[str, Any],
+    recent_manual_restores: list[dict[str, Any]],
+    recent_backtests: list[dict[str, Any]],
+    latest_portfolio_snapshot: dict[str, Any] | None,
+) -> dict[str, Any]:
+    latest_restore = recent_manual_restores[0] if recent_manual_restores else None
+    latest_backtest = recent_backtests[0] if recent_backtests else None
+    latest_reconciliation_status = reconciliation_summary.get("latest_status")
+    mismatch_total = int(reconciliation_summary.get("mismatch_total", 0) or 0)
+
+    return {
+        "health_status": health.status.value,
+        "trading_blocked": health.trading_blocked,
+        "token_stale": health.token_stale,
+        "poll_stale": health.poll_stale,
+        "writer_queue_degraded": health.writer_queue_degraded,
+        "has_recent_mismatch": mismatch_total > 0,
+        "latest_reconciliation_status": latest_reconciliation_status,
+        "latest_reconciliation_run_type": reconciliation_summary.get("latest_run_type"),
+        "reconciliation_warning_count": reconciliation_summary.get("warning_count", 0),
+        "reconciliation_failed_count": reconciliation_summary.get("failed_count", 0),
+        "recent_manual_restore_count": len(recent_manual_restores),
+        "latest_manual_restore_status": None if latest_restore is None else latest_restore["status"],
+        "latest_manual_restore_started_at": None if latest_restore is None else latest_restore["started_at"],
+        "recent_backtest_count": len(recent_backtests),
+        "latest_backtest_strategy": None if latest_backtest is None else latest_backtest["strategy"],
+        "latest_backtest_market": None if latest_backtest is None else latest_backtest["market"],
+        "latest_backtest_created_at": None if latest_backtest is None else latest_backtest["created_at"],
+        "latest_portfolio_snapshot_date": None if latest_portfolio_snapshot is None else latest_portfolio_snapshot["snapshot_date"],
     }
 
 
@@ -170,5 +264,8 @@ def dashboard_snapshot_to_dict(snapshot: DashboardSnapshot) -> dict[str, Any]:
         "recent_trades": snapshot.recent_trades,
         "latest_portfolio_snapshot": snapshot.latest_portfolio_snapshot,
         "reconciliation_summary": snapshot.reconciliation_summary,
+        "recent_manual_restores": snapshot.recent_manual_restores,
+        "recent_backtests": snapshot.recent_backtests,
+        "operational_summary": snapshot.operational_summary,
         "recent_logs": snapshot.recent_logs,
     }

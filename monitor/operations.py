@@ -1,12 +1,44 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, Mapping
 
 from data.database import PortfolioSnapshot, SystemLog, utc_now
 from execution.writer_queue import WriterQueue
+
+
+SENSITIVE_FIELD_TOKENS = (
+    "token",
+    "account",
+    "header",
+    "authorization",
+    "raw_payload",
+    "payload",
+    "credential",
+    "app_key",
+    "app_secret",
+    "chat_id",
+)
+
+
+@dataclass(slots=True)
+class SystemLogPayload:
+    level: str
+    module: str
+    message: str
+    extra_fields: dict[str, Any] = field(default_factory=dict)
+    created_at: datetime | None = None
+
+    def normalized(self) -> "SystemLogPayload":
+        return SystemLogPayload(
+            level=self.level.strip().upper(),
+            module=self.module.strip(),
+            message=self.message.strip(),
+            extra_fields=_sanitize_extra_fields(self.extra_fields),
+            created_at=self.created_at,
+        )
 
 
 @dataclass(slots=True)
@@ -30,25 +62,53 @@ class OperationsRecorder:
 
     def record_system_log(
         self,
+        payload: SystemLogPayload | None = None,
+        /,
         *,
-        level: str,
-        module: str,
-        message: str,
+        level: str | None = None,
+        module: str | None = None,
+        message: str | None = None,
         extra: dict[str, Any] | None = None,
         created_at: datetime | None = None,
     ) -> int:
-        future = self.writer_queue.submit(
-            lambda session: self._insert_system_log(
-                session,
+        log_payload = (
+            payload.normalized()
+            if payload is not None
+            else self.build_system_log_payload(
                 level=level,
                 module=module,
                 message=message,
                 extra=extra,
                 created_at=created_at,
+            )
+        )
+        future = self.writer_queue.submit(
+            lambda session: self._insert_system_log(
+                session,
+                payload=log_payload,
             ),
             description="record system log",
         )
         return future.result()
+
+    def build_system_log_payload(
+        self,
+        *,
+        level: str | None,
+        module: str | None,
+        message: str | None,
+        extra: Mapping[str, Any] | None = None,
+        created_at: datetime | None = None,
+    ) -> SystemLogPayload:
+        if not level or not module or not message:
+            raise ValueError("level, module, and message are required")
+        return SystemLogPayload(
+            level=level,
+            module=module,
+            message=message,
+            extra_fields=dict(extra or {}),
+            created_at=created_at,
+        ).normalized()
 
     def record_portfolio_snapshot(self, payload: PortfolioSnapshotPayload) -> int:
         future = self.writer_queue.submit(
@@ -61,18 +121,16 @@ class OperationsRecorder:
     def _insert_system_log(
         session,
         *,
-        level: str,
-        module: str,
-        message: str,
-        extra: dict[str, Any] | None,
-        created_at: datetime | None,
+        payload: SystemLogPayload,
     ) -> int:
         row = SystemLog(
-            level=level,
-            module=module,
-            message=message,
-            extra_json=None if extra is None else json.dumps(extra, sort_keys=True, default=str),
-            created_at=created_at or utc_now(),
+            level=payload.level,
+            module=payload.module,
+            message=payload.message,
+            extra_json=None
+            if not payload.extra_fields
+            else json.dumps(payload.extra_fields, sort_keys=True, default=str),
+            created_at=payload.created_at or utc_now(),
         )
         session.add(row)
         session.flush()
@@ -112,3 +170,26 @@ class OperationsRecorder:
         row.position_count = payload.position_count
         session.flush()
         return row.id
+
+
+def _sanitize_extra_fields(extra_fields: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not extra_fields:
+        return {}
+
+    sanitized: dict[str, Any] = {}
+    for key, value in extra_fields.items():
+        if _is_sensitive_field(key):
+            continue
+        if isinstance(value, Mapping):
+            sanitized[key] = "<omitted>"
+            continue
+        if isinstance(value, (list, tuple, set)):
+            sanitized[key] = "<omitted>"
+            continue
+        sanitized[key] = value
+    return sanitized
+
+
+def _is_sensitive_field(key: str) -> bool:
+    normalized = key.strip().lower()
+    return any(token in normalized for token in SENSITIVE_FIELD_TOKENS)

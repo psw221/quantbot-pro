@@ -97,7 +97,7 @@ class RestorePortfolioService:
             )
 
         try:
-            result = self.reconciliation_service.reconcile_snapshot(filtered)
+            result = self.reconciliation_service.reconcile_snapshot(filtered, run_type="manual_restore")
             if result.status == ReconciliationStatus.MISMATCH_DETECTED and self.order_manager is not None:
                 self.order_manager.flag_reconciliation_hold(None, summary={"mismatch_count": summary.mismatch_count, "market": summary.market})
             self._record_optional_portfolio_snapshot(filtered)
@@ -108,6 +108,7 @@ class RestorePortfolioService:
                     message="restore apply completed",
                     extra={
                         "market": summary.market,
+                        "run_type": "manual_restore",
                         "status": result.status.value,
                         "mismatch_count": summary.mismatch_count,
                     },
@@ -123,6 +124,7 @@ class RestorePortfolioService:
                     message="restore apply failed",
                     extra={
                         "market": summary.market,
+                        "run_type": "manual_restore",
                         "error": str(exc),
                     },
                 )

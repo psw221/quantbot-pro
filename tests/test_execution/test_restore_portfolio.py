@@ -130,6 +130,13 @@ def test_restore_portfolio_preview_reports_position_and_order_mismatches(tmp_pat
     assert summary.position_mismatches[0]["internal_quantity"] == 5
     assert {item["reason"] for item in summary.order_mismatches} == {"broker_only", "internal_only"}
 
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        assert session.query(BrokerPosition).count() == 0
+        assert session.query(ReconciliationRun).count() == 0
+        assert session.query(SystemLog).count() == 0
+        assert session.query(PortfolioSnapshot).count() == 0
+
 
 def test_restore_portfolio_apply_records_reconciliation_logs_and_snapshot(tmp_path) -> None:
     settings = build_settings(tmp_path)
@@ -160,7 +167,14 @@ def test_restore_portfolio_apply_records_reconciliation_logs_and_snapshot(tmp_pa
     session_factory = get_session_factory()
     with session_factory() as session:
         assert session.query(BrokerPosition).count() == 1
-        assert session.query(ReconciliationRun).count() >= 1
+        restore_run = (
+            session.query(ReconciliationRun)
+            .filter(ReconciliationRun.run_type == "manual_restore")
+            .order_by(ReconciliationRun.id.desc())
+            .first()
+        )
+        assert restore_run is not None
+        assert restore_run.run_type == "manual_restore"
         assert session.query(SystemLog).count() >= 2
         snapshot_row = session.query(PortfolioSnapshot).one()
         assert snapshot_row.total_value_krw == 12300000
