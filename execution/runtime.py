@@ -11,10 +11,12 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from auth.token_manager import TokenManager
-from core.exceptions import AuthenticationError
+from core.exceptions import AuthenticationError, BrokerApiError
 from core.models import ReconciliationStatus, RuntimeHealthStatus, RuntimeState
 from core.settings import Settings, get_settings
 from data.database import Order, get_read_session
+from execution.fill_ingestion import BrokerFillIngestionService
+from execution.fill_processor import FillProcessor
 from execution.kis_api import KISApiClient
 from execution.order_manager import OrderManager
 from execution.reconciliation import ReconciliationService
@@ -29,6 +31,10 @@ PRE_CLOSE_CANCEL_KR_JOB_ID = "pre_close_cancel_kr"
 PRE_CLOSE_CANCEL_US_JOB_ID = "pre_close_cancel_us"
 HEALTHCHECK_JOB_ID = "healthcheck"
 TOKEN_REFRESH_MAX_ATTEMPTS = 3
+BROKER_POLL_QUERY_MAX_ATTEMPTS = 3
+BROKER_POLL_RETRY_DELAY_SEC = 1.0
+PRE_CLOSE_CANCEL_MAX_ATTEMPTS = 3
+PRE_CLOSE_CANCEL_RETRY_DELAY_SEC = 1.0
 
 
 def to_kst(now: datetime) -> datetime:
@@ -93,6 +99,8 @@ class TradingRuntime:
         token_manager: TokenManager | None = None,
         api_client: KISApiClient | None = None,
         order_manager: OrderManager | None = None,
+        fill_processor: FillProcessor | None = None,
+        fill_ingestion_service: BrokerFillIngestionService | None = None,
         reconciliation_service: ReconciliationService | None = None,
         settings: Settings | None = None,
         scheduler: BackgroundScheduler | None = None,
@@ -103,6 +111,14 @@ class TradingRuntime:
         self.token_manager = token_manager
         self.api_client = api_client or (getattr(token_manager, "api_client", None) if token_manager is not None else None)
         self.order_manager = order_manager
+        can_auto_ingest_fills = self.api_client is not None and all(
+            hasattr(self.api_client, attribute)
+            for attribute in ("list_daily_order_fills", "normalize_daily_order_fills")
+        )
+        self.fill_processor = fill_processor or (FillProcessor(writer_queue) if can_auto_ingest_fills else None)
+        self.fill_ingestion_service = fill_ingestion_service or (
+            BrokerFillIngestionService(api_client=self.api_client, settings=self.settings) if can_auto_ingest_fills else None
+        )
         self.reconciliation_service = reconciliation_service
         self.scheduler = scheduler or BackgroundScheduler(timezone=KST)
         self.time_provider = time_provider or (lambda: datetime.now(KST))
@@ -237,10 +253,25 @@ class TradingRuntime:
                 self.order_manager.start_scheduled_poll()
 
             access_token = self.token_manager.get_valid_token(self.settings.env)
+            if self.fill_ingestion_service is not None and self.fill_processor is not None:
+                fills = self._call_broker_poll_with_retry(
+                    lambda: self.fill_ingestion_service.collect_execution_fills(access_token, market=active_market)
+                )
+                for fill in fills:
+                    self.fill_processor.process_fill(fill)
+            account_payload = self._call_broker_poll_with_retry(
+                lambda: self.api_client.get_account_snapshot(access_token)
+            )
+            open_orders_payload = self._call_broker_poll_with_retry(
+                lambda: self.api_client.list_open_orders(access_token)
+            )
+            cash_payload = self._call_broker_poll_with_retry(
+                lambda: self.api_client.get_cash_balance(access_token)
+            )
             snapshot = self.api_client.build_polling_snapshot(
-                account_payload=self.api_client.get_account_snapshot(access_token),
-                open_orders_payload=self.api_client.list_open_orders(access_token),
-                cash_payload=self.api_client.get_cash_balance(access_token),
+                account_payload=account_payload,
+                open_orders_payload=open_orders_payload,
+                cash_payload=cash_payload,
                 default_market=active_market,
                 default_currency="KRW" if active_market == "KR" else "USD",
             )
@@ -274,6 +305,53 @@ class TradingRuntime:
             )
         self._refresh_health_status()
 
+    def _call_broker_poll_with_retry(self, operation):
+        last_error: Exception | None = None
+        for attempt in range(1, BROKER_POLL_QUERY_MAX_ATTEMPTS + 1):
+            try:
+                return operation()
+            except Exception as exc:
+                last_error = exc
+                if not self._is_retryable_broker_poll_error(exc) or attempt >= BROKER_POLL_QUERY_MAX_ATTEMPTS:
+                    raise
+                time_module.sleep(BROKER_POLL_RETRY_DELAY_SEC * attempt)
+        assert last_error is not None
+        raise last_error
+
+    def _is_retryable_broker_poll_error(self, exc: Exception) -> bool:
+        if self.api_client is not None and hasattr(self.api_client, "is_retryable_broker_error"):
+            return bool(self.api_client.is_retryable_broker_error(exc))
+        if isinstance(exc, BrokerApiError):
+            if exc.status_code in {408, 409, 425, 429, 500, 502, 503, 504}:
+                return True
+            message = str(exc).lower()
+            return any(
+                marker in message
+                for marker in (
+                    "egw00201",
+                    "초당 거래건수를 초과하였습니다",
+                    "rate limit",
+                    "throttle",
+                    "timeout",
+                    "temporary",
+                    "temporarily",
+                    "retry later",
+                )
+            )
+        return False
+
+    def _is_retryable_broker_write_error(self, exc: Exception) -> bool:
+        if self.api_client is not None and hasattr(self.api_client, "is_retryable_broker_error"):
+            return bool(self.api_client.is_retryable_broker_error(exc))
+        if self.order_manager is not None and isinstance(exc, BrokerApiError):
+            return self.order_manager.classify_submit_exception(exc).retryable
+        return False
+
+    def _is_retryable_broker_result(self, result) -> bool:
+        if self.order_manager is None:
+            return False
+        return self.order_manager.classify_submit_result(result).retryable
+
     def _run_pre_close_cancel_job(self, market: str) -> None:
         if not is_pre_close_window(market, self.time_provider()):
             self._refresh_health_status()
@@ -290,6 +368,7 @@ class TradingRuntime:
         try:
             access_token = self.token_manager.get_valid_token(self.settings.env)
             cancelled_count = 0
+            missing_cancel_metadata = 0
             with get_read_session() as session:
                 candidates = list(
                     session.query(Order)
@@ -304,16 +383,17 @@ class TradingRuntime:
             for order in candidates:
                 if not order.kis_order_no:
                     continue
-                result = self.api_client.normalize_cancel_result(
-                    self.api_client.cancel_order(
-                        {
-                            "order_no": order.kis_order_no,
-                            "ticker": order.ticker,
-                            "market": order.market,
-                        },
-                        access_token=access_token,
-                    )
-                )
+                cancel_payload = {
+                    "order_no": order.kis_order_no,
+                    "ticker": order.ticker,
+                    "market": order.market,
+                }
+                if market == "KR":
+                    if not order.kis_order_orgno:
+                        missing_cancel_metadata += 1
+                        continue
+                    cancel_payload["order_orgno"] = order.kis_order_orgno
+                result = self._cancel_order_with_retry(cancel_payload, access_token=access_token)
                 if result.accepted:
                     self.order_manager.request_cancel(order.id)
                     self.order_manager.confirm_cancel(order.id)
@@ -321,7 +401,11 @@ class TradingRuntime:
 
             self.state = replace(
                 self.state,
-                last_error=None if cancelled_count or not self.state.trading_blocked else self.state.last_error,
+                last_error=(
+                    f"pre_close_cancel_missing_order_orgno:{missing_cancel_metadata}"
+                    if missing_cancel_metadata
+                    else (None if cancelled_count or not self.state.trading_blocked else self.state.last_error)
+                ),
             )
         except Exception as exc:
             self.state = replace(
@@ -329,6 +413,33 @@ class TradingRuntime:
                 last_error=str(exc) or "pre_close_cancel_failed",
             )
         self._refresh_health_status()
+
+    def _cancel_order_with_retry(self, cancel_payload: dict[str, object], *, access_token: str):
+        last_error: Exception | None = None
+        for attempt in range(1, PRE_CLOSE_CANCEL_MAX_ATTEMPTS + 1):
+            try:
+                result = self.api_client.normalize_cancel_result(
+                    self.api_client.cancel_order(
+                        cancel_payload,
+                        access_token=access_token,
+                    )
+                )
+            except Exception as exc:
+                last_error = exc
+                if not self._is_retryable_broker_write_error(exc) or attempt >= PRE_CLOSE_CANCEL_MAX_ATTEMPTS:
+                    raise
+                time_module.sleep(PRE_CLOSE_CANCEL_RETRY_DELAY_SEC * attempt)
+                continue
+
+            if result.accepted:
+                return result
+            if self._is_retryable_broker_result(result) and attempt < PRE_CLOSE_CANCEL_MAX_ATTEMPTS:
+                time_module.sleep(PRE_CLOSE_CANCEL_RETRY_DELAY_SEC * attempt)
+                continue
+            raise BrokerApiError(result.error_message or "cancel rejected")
+
+        assert last_error is not None
+        raise last_error
 
     def _run_healthcheck_job(self) -> None:
         self._refresh_health_status()

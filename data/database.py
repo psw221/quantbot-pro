@@ -104,11 +104,13 @@ class Order(Base):
     __table_args__ = (
         Index("idx_orders_status", "status", "updated_at"),
         Index("idx_orders_kis_order_no", "kis_order_no"),
+        Index("idx_orders_kis_order_orgno", "kis_order_orgno"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     client_order_id: Mapped[str] = mapped_column(String, nullable=False, unique=True)
     kis_order_no: Mapped[str | None] = mapped_column(String)
+    kis_order_orgno: Mapped[str | None] = mapped_column(String)
     signal_id: Mapped[int] = mapped_column(ForeignKey("signals.id"), nullable=False)
     ticker: Mapped[str] = mapped_column(String, nullable=False)
     market: Mapped[str] = mapped_column(String, nullable=False)

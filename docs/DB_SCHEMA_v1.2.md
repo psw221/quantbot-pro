@@ -219,6 +219,7 @@ CREATE TABLE orders (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     client_order_id     TEXT    NOT NULL UNIQUE,
     kis_order_no        TEXT,
+    kis_order_orgno     TEXT,
     signal_id           INTEGER NOT NULL,
     ticker              TEXT    NOT NULL,
     market              TEXT    NOT NULL,
@@ -256,6 +257,13 @@ Canonical `orders.status` 값:
 - `retryable`, `terminal`, `auth`, `reconcile_hold` 분류 판단에 필요한 최소 오류 정보만 남깁니다.
 - 브로커 raw payload 전체나 인증 헤더는 저장하지 않습니다.
 - `reconcile_hold` 전환 시에도 `error_code`, `error_message`에는 hold 원인을 추적할 수 있는 최소 문자열만 저장합니다.
+
+`orders.kis_order_orgno` 사용 원칙:
+
+- 국내(KR) 주문 제출 성공 시 브로커 응답의 `KRX_FWDG_ORD_ORGNO`를 최소 문자열로 저장합니다.
+- 이 값은 `order-rvsecncl` 취소 요청의 필수 입력으로 사용합니다.
+- 미국(US) 주문에는 기본적으로 `NULL`을 허용합니다.
+- 브로커 raw payload 전체를 저장하지 않고, 취소 재요청에 필요한 최소 식별자만 영속화합니다.
 
 ## 5.6 `order_executions`
 
@@ -573,6 +581,7 @@ CREATE INDEX idx_broker_positions_snapshot      ON broker_positions (ticker, mar
 CREATE INDEX idx_signals_status                 ON signals (status, generated_at);
 CREATE INDEX idx_orders_status                  ON orders (status, updated_at);
 CREATE INDEX idx_orders_kis_order_no            ON orders (kis_order_no);
+CREATE INDEX idx_orders_kis_order_orgno         ON orders (kis_order_orgno);
 CREATE INDEX idx_order_executions_order         ON order_executions (order_id, executed_at);
 CREATE INDEX idx_trades_ticker_date             ON trades (ticker, executed_at);
 CREATE INDEX idx_trades_strategy                ON trades (strategy, executed_at);

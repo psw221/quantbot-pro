@@ -368,14 +368,19 @@ Layer 5  모니터링 및 DR
 
 - 스케줄러는 `in-process APScheduler`로 구동합니다.
 - polling은 시장 세션 인지형으로 동작하며, 현재 세션 우선순위는 `KR -> US`입니다.
+- 현재 저장소 기준 KR polling은 `주식일별주문체결조회`를 사용해 브로커 cumulative fill을 `ExecutionFill` delta로 자동 변환한 뒤 `fill_processor`에 반영합니다.
+- 현재 저장소 기준 KR VTS polling에서는 `미체결/정정취소가능주문조회` 미지원 응답을 adapter에서 empty `open_orders` snapshot으로 흡수합니다.
+- 현재 저장소 기준 US 자동 fill ingestion은 미구현이며, KR 경로만 broker fill auto-sync를 지원합니다.
+- polling의 read-only broker query는 rate limit / temporary broker error에 대해 짧은 재시도를 수행한 뒤에만 polling failure로 집계합니다.
 - polling 예외는 연속 실패 횟수로 관리하고 3회 연속 실패 시 신규 주문을 차단합니다.
 - 장 종료 전 미체결 취소는 국내 `15:25 KST`, 미국 `05:55 KST` 기본값을 사용합니다.
+- 국내 장 종료 전 취소는 브로커 주문번호 외에 주문조직번호(`broker_order_orgno`)까지 저장된 주문만 브로커 취소 대상으로 사용합니다.
 
 ### 브로커 응답 정규화 계약
 
 주문 실행 계층은 KIS raw payload를 직접 비즈니스 로직에 노출하지 않고 아래 내부 표준 표면으로 정규화합니다.
 
-- 주문 제출/취소 결과: `accepted`, `broker_order_no`, `error_code`, `error_message`
+- 주문 제출/취소 결과: `accepted`, `broker_order_no`, `broker_order_orgno`, `error_code`, `error_message`
 - 미체결 주문 스냅샷: `order_no`, `ticker`, `market`, `side`, `quantity`, `remaining_quantity`, `status`, `price`
 - 브로커 포지션 스냅샷: `ticker`, `market`, `quantity`, `avg_cost`, `currency`, `snapshot_at`, `source_env`
 - 브로커 polling 스냅샷: `positions`, `open_orders`, `cash_available`
@@ -426,7 +431,7 @@ Phase 2 기준 canonical 상태는 아래와 같습니다.
 
 | 분류 | 기준 | 처리 |
 |------|------|------|
-| `retryable` | rate limit, timeout, temporary broker error, HTTP `408/409/425/429/500/502/503/504` | `retry_count` 증가, 재시도 한도 미만이면 `validated` 유지 |
+| `retryable` | rate limit, timeout, temporary broker error, HTTP `408/409/425/429/500/502/503/504` | submit/cancel write path에서 짧은 자동 재시도 후에도 실패하면 `retry_count` 증가, 재시도 한도 미만이면 `validated` 유지 |
 | `terminal` | 잘못된 주문 파라미터, 비재시도 브로커 거절, 일반 `4xx` 오류 | 즉시 `failed` |
 | `auth` | token/auth/access 오류, `AuthenticationError` | 즉시 `failed`, 신규 주문 차단 |
 | `reconcile_hold` | broker/internal state mismatch, sync required, `ReconciliationError` | 주문을 `reconcile_hold`로 전환하고 reconciliation 수행 |
@@ -435,6 +440,7 @@ Phase 2 기준 canonical 상태는 아래와 같습니다.
 
 - `auth`, `reconcile_hold`는 `trading_blocked=True`를 유발합니다.
 - `reconcile_hold`는 개별 주문 실패가 아니라 정합성 복구 흐름의 시작점으로 간주합니다.
+- 주문 제출과 장 종료 전 취소의 broker write path는 retryable rate-limit/temporary 오류에 대해 짧은 in-process 자동 재시도를 수행합니다.
 - 재시도 가능 오류도 최대 재시도 횟수 초과 시 `failed`로 종결합니다.
 
 ## 5.7 국내 시장 특수 제약 검증

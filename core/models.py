@@ -153,6 +153,21 @@ class BrokerPositionSnapshot:
 
 
 @dataclass(slots=True)
+class BrokerFillSnapshot:
+    order_no: str
+    order_orgno: str | None
+    ticker: str
+    market: MarketCode
+    side: OrderSide
+    order_quantity: int
+    cumulative_filled_quantity: int
+    remaining_quantity: int
+    average_filled_price: float | None
+    occurred_at: datetime
+    execution_hint: str | None = None
+
+
+@dataclass(slots=True)
 class PriceBar:
     ticker: str
     market: MarketCode
@@ -239,6 +254,7 @@ class BrokerPollingSnapshot:
 class BrokerOrderResult:
     accepted: bool
     broker_order_no: str | None = None
+    broker_order_orgno: str | None = None
     error_code: str | None = None
     error_message: str | None = None
     raw_payload: dict[str, Any] = field(default_factory=dict)

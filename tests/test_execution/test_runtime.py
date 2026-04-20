@@ -3,9 +3,11 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from auth.token_manager import AccessToken
-from core.exceptions import AuthenticationError
+from core.exceptions import AuthenticationError, BrokerApiError
+from core.models import ExecutionFill
 from core.models import ReconciliationResult, ReconciliationStatus, RuntimeHealthStatus, RuntimeState
 from data.database import Order, get_read_session, init_db
+from execution.fill_processor import FillProcessor
 from execution.runtime import (
     BROKER_POLL_JOB_ID,
     HEALTHCHECK_JOB_ID,
@@ -300,6 +302,240 @@ def test_trading_runtime_runs_polling_and_records_success(tmp_path) -> None:
     assert snapshot["consecutive_poll_failures"] == 0
 
 
+def test_trading_runtime_retries_retryable_poll_query_errors(tmp_path, monkeypatch) -> None:
+    class DummyTokenManager:
+        def refresh_token(self, env):
+            issued_at = datetime(2026, 4, 15, 8, 0, tzinfo=KST)
+            return AccessToken(token="token", issued_at=issued_at, expires_at=issued_at + timedelta(hours=1))
+
+        def get_valid_token(self, env):
+            return "token"
+
+    class FlakyApiClient:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+            self.open_order_attempts = 0
+
+        def get_account_snapshot(self, access_token):
+            self.calls.append("account")
+            return {"output1": []}
+
+        def list_open_orders(self, access_token):
+            self.calls.append("open_orders")
+            self.open_order_attempts += 1
+            if self.open_order_attempts == 1:
+                raise BrokerApiError("초당 거래건수를 초과하였습니다.", status_code=500)
+            return {"output": []}
+
+        def get_cash_balance(self, access_token):
+            self.calls.append("cash")
+            return {"output": {"ord_psbl_cash": "1000"}}
+
+        def build_polling_snapshot(self, **kwargs):
+            self.calls.append("build")
+            from core.models import BrokerPollingSnapshot
+
+            return BrokerPollingSnapshot(positions=[], open_orders=[], cash_available=1000)
+
+    class DummyReconciliationService:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def reconcile_snapshot(self, snapshot, *, missing_fills=None):
+            self.calls += 1
+            return ReconciliationResult(status=ReconciliationStatus.RECONCILED, summary={"mismatch_count": 0})
+
+    settings = build_settings(tmp_path)
+    writer_queue = WriterQueue()
+    api_client = FlakyApiClient()
+    reconciliation_service = DummyReconciliationService()
+    runtime = TradingRuntime(
+        writer_queue=writer_queue,
+        token_manager=DummyTokenManager(),
+        api_client=api_client,
+        reconciliation_service=reconciliation_service,
+        settings=settings,
+        time_provider=lambda: datetime(2026, 4, 15, 9, 30, tzinfo=KST),
+    )
+    monkeypatch.setattr("execution.runtime.time_module.sleep", lambda _: None)
+
+    try:
+        runtime.start()
+        runtime._run_broker_poll_job()
+        snapshot = runtime.health_snapshot()
+    finally:
+        runtime.stop()
+
+    assert api_client.calls == ["account", "open_orders", "open_orders", "cash", "build"]
+    assert reconciliation_service.calls == 1
+    assert snapshot["consecutive_poll_failures"] == 0
+    assert snapshot["last_error"] is None
+
+
+def test_trading_runtime_absorbs_vts_open_orders_unsupported_response(tmp_path) -> None:
+    from tests.test_execution.test_bootstrap import DummySession
+    from execution.kis_api import KISApiClient
+
+    class DummyTokenManager:
+        def refresh_token(self, env):
+            issued_at = datetime(2026, 4, 15, 8, 0, tzinfo=KST)
+            return AccessToken(token="token", issued_at=issued_at, expires_at=issued_at + timedelta(hours=1))
+
+        def get_valid_token(self, env):
+            return "token"
+
+    class DummyReconciliationService:
+        def __init__(self) -> None:
+            self.snapshots = []
+
+        def reconcile_snapshot(self, snapshot, *, missing_fills=None):
+            self.snapshots.append(snapshot)
+            return ReconciliationResult(status=ReconciliationStatus.RECONCILED, summary={"mismatch_count": 0})
+
+    settings = build_settings(tmp_path)
+    init_db(settings)
+    api_client = KISApiClient(
+        settings=settings,
+        session=DummySession(
+            [
+                {"output1": []},
+                {
+                    "rt_cd": "1",
+                    "msg_cd": "OPSQ0001",
+                    "msg1": "모의투자에서는 해당업무가 제공되지 않습니다.",
+                },
+                {"output": {"ord_psbl_cash": "1000"}},
+            ]
+        ),
+    )
+    writer_queue = WriterQueue()
+    reconciliation_service = DummyReconciliationService()
+    runtime = TradingRuntime(
+        writer_queue=writer_queue,
+        token_manager=DummyTokenManager(),
+        api_client=api_client,
+        reconciliation_service=reconciliation_service,
+        settings=settings,
+        time_provider=lambda: datetime(2026, 4, 15, 9, 30, tzinfo=KST),
+    )
+
+    try:
+        runtime.start()
+        runtime._run_broker_poll_job()
+        snapshot = runtime.health_snapshot()
+    finally:
+        runtime.stop()
+
+    assert len(reconciliation_service.snapshots) == 1
+    assert reconciliation_service.snapshots[0].open_orders == []
+    assert snapshot["consecutive_poll_failures"] == 0
+    assert snapshot["last_error"] is None
+
+
+def test_trading_runtime_processes_broker_fills_before_reconciliation(tmp_path) -> None:
+    class DummyTokenManager:
+        def refresh_token(self, env):
+            issued_at = datetime(2026, 4, 15, 8, 0, tzinfo=KST)
+            return AccessToken(token="token", issued_at=issued_at, expires_at=issued_at + timedelta(hours=1))
+
+        def get_valid_token(self, env):
+            return "token"
+
+    class DummyApiClient:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def get_account_snapshot(self, access_token):
+            self.calls.append("account")
+            return {"output1": []}
+
+        def list_open_orders(self, access_token):
+            self.calls.append("open_orders")
+            return {"output": []}
+
+        def get_cash_balance(self, access_token):
+            self.calls.append("cash")
+            return {"output": {"ord_psbl_cash": "1000"}}
+
+        def build_polling_snapshot(self, **kwargs):
+            self.calls.append("build")
+            from core.models import BrokerPollingSnapshot
+
+            return BrokerPollingSnapshot(positions=[], open_orders=[], cash_available=1000)
+
+    class DummyFillIngestionService:
+        def __init__(self, fill: ExecutionFill) -> None:
+            self.fill = fill
+            self.calls = 0
+
+        def collect_execution_fills(self, access_token, *, market, start_date=None, end_date=None):
+            self.calls += 1
+            return [self.fill]
+
+    class DummyReconciliationService:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def reconcile_snapshot(self, snapshot, *, missing_fills=None):
+            self.calls += 1
+            return ReconciliationResult(status=ReconciliationStatus.RECONCILED, summary={"mismatch_count": 0})
+
+    settings = build_settings(tmp_path)
+    init_db(settings)
+    writer_queue = WriterQueue()
+    writer_queue.start()
+    manager = OrderManager(writer_queue=writer_queue, settings=settings)
+    runtime = None
+
+    try:
+        signal = Signal(ticker="005930", market="KR", action="buy", strategy="dual_momentum", strength=1.0, reason="entry")
+        signal_id = manager.persist_signal(signal)
+        intent = manager.create_order_intent(signal, signal_id=signal_id, quantity=1, price=70000)
+        submission = manager.persist_validated_order(intent)
+        manager.mark_submission_result(submission.order_id, broker_order_no="KR-OPEN-1", broker_order_orgno="06010", accepted=True)
+
+        fill = ExecutionFill(
+            order_id=submission.order_id,
+            execution_no="KR-SYNC-1",
+            fill_seq=1,
+            filled_quantity=1,
+            filled_price=70000,
+            fee=0.0,
+            tax=0.0,
+            executed_at=datetime(2026, 4, 15, 9, 1, tzinfo=timezone.utc),
+        )
+        api_client = DummyApiClient()
+        fill_service = DummyFillIngestionService(fill)
+        reconciliation_service = DummyReconciliationService()
+        runtime = TradingRuntime(
+            writer_queue=writer_queue,
+            token_manager=DummyTokenManager(),
+            api_client=api_client,
+            order_manager=manager,
+            fill_processor=FillProcessor(writer_queue),
+            fill_ingestion_service=fill_service,
+            reconciliation_service=reconciliation_service,
+            settings=settings,
+            time_provider=lambda: datetime(2026, 4, 15, 9, 30, tzinfo=KST),
+        )
+
+        runtime.start()
+        runtime._run_broker_poll_job()
+    finally:
+        if runtime is not None:
+            runtime.stop()
+        writer_queue.stop()
+
+    assert fill_service.calls == 1
+    assert reconciliation_service.calls == 1
+    assert api_client.calls == ["account", "open_orders", "cash", "build"]
+    with get_read_session() as session:
+        order = session.get(Order, submission.order_id)
+
+    assert order is not None
+    assert order.status == "filled"
+
+
 def test_trading_runtime_blocks_on_polling_mismatch(tmp_path) -> None:
     class DummyTokenManager:
         def refresh_token(self, env):
@@ -453,10 +689,10 @@ def test_trading_runtime_cancels_only_open_orders_in_pre_close_window(tmp_path) 
 
     class DummyApiClient:
         def __init__(self) -> None:
-            self.cancelled_orders: list[str] = []
+            self.cancelled_orders: list[dict] = []
 
         def cancel_order(self, payload, access_token=None):
-            self.cancelled_orders.append(payload["order_no"])
+            self.cancelled_orders.append(payload)
             return {"rt_cd": "0", "msg_cd": "APBK0013", "msg1": "ok", "output": {"ODNO": payload["order_no"]}}
 
         def normalize_cancel_result(self, payload):
@@ -477,13 +713,23 @@ def test_trading_runtime_cancels_only_open_orders_in_pre_close_window(tmp_path) 
         submitted_signal_id = manager.persist_signal(submitted_signal)
         submitted_intent = manager.create_order_intent(submitted_signal, signal_id=submitted_signal_id, quantity=1, price=70000)
         submitted_order = manager.persist_validated_order(submitted_intent)
-        manager.mark_submission_result(submitted_order.order_id, broker_order_no="KR-OPEN-1", accepted=True)
+        manager.mark_submission_result(
+            submitted_order.order_id,
+            broker_order_no="KR-OPEN-1",
+            broker_order_orgno="06010",
+            accepted=True,
+        )
 
         partial_signal = Signal(ticker="000660", market="KR", action="buy", strategy="dual_momentum", strength=1.0, reason="entry")
         partial_signal_id = manager.persist_signal(partial_signal)
         partial_intent = manager.create_order_intent(partial_signal, signal_id=partial_signal_id, quantity=1, price=120000)
         partial_order = manager.persist_validated_order(partial_intent)
-        manager.mark_submission_result(partial_order.order_id, broker_order_no="KR-OPEN-2", accepted=True)
+        manager.mark_submission_result(
+            partial_order.order_id,
+            broker_order_no="KR-OPEN-2",
+            broker_order_orgno="06011",
+            accepted=True,
+        )
         future = writer_queue.submit(
             lambda session: setattr(session.get(Order, partial_order.order_id), "status", "partially_filled"),
             description="mark partial",
@@ -518,7 +764,8 @@ def test_trading_runtime_cancels_only_open_orders_in_pre_close_window(tmp_path) 
             runtime.stop()
         writer_queue.stop()
 
-    assert api_client.cancelled_orders == ["KR-OPEN-1", "KR-OPEN-2"]
+    assert [payload["order_no"] for payload in api_client.cancelled_orders] == ["KR-OPEN-1", "KR-OPEN-2"]
+    assert [payload["order_orgno"] for payload in api_client.cancelled_orders] == ["06010", "06011"]
     with get_read_session() as session:
         submitted_row = session.get(Order, submitted_order.order_id)
         partial_row = session.get(Order, partial_order.order_id)
@@ -528,6 +775,139 @@ def test_trading_runtime_cancels_only_open_orders_in_pre_close_window(tmp_path) 
     assert partial_row is not None and partial_row.status == "cancelled"
     assert filled_row is not None and filled_row.status == "filled"
     assert snapshot["last_error"] is None
+
+
+def test_trading_runtime_retries_retryable_pre_close_cancel_error(tmp_path, monkeypatch) -> None:
+    class DummyTokenManager:
+        def refresh_token(self, env):
+            issued_at = datetime(2026, 4, 15, 8, 0, tzinfo=KST)
+            return AccessToken(token="token", issued_at=issued_at, expires_at=issued_at + timedelta(hours=1))
+
+        def get_valid_token(self, env):
+            return "token"
+
+    class FlakyCancelApiClient:
+        def __init__(self) -> None:
+            self.cancel_attempts = 0
+            self.cancelled_orders: list[dict] = []
+
+        def cancel_order(self, payload, access_token=None):
+            self.cancel_attempts += 1
+            self.cancelled_orders.append(payload)
+            if self.cancel_attempts == 1:
+                raise BrokerApiError("초당 거래건수를 초과하였습니다.", status_code=500)
+            return {"rt_cd": "0", "msg_cd": "APBK0013", "msg1": "ok", "output": {"ODNO": payload["order_no"]}}
+
+        def normalize_cancel_result(self, payload):
+            from core.models import BrokerOrderResult
+
+            return BrokerOrderResult(accepted=True, broker_order_no=payload["output"]["ODNO"], raw_payload=payload)
+
+    settings = build_settings(tmp_path)
+    init_db(settings)
+    writer_queue = WriterQueue()
+    writer_queue.start()
+    api_client = FlakyCancelApiClient()
+    manager = OrderManager(writer_queue=writer_queue, settings=settings)
+    runtime = None
+    monkeypatch.setattr("execution.runtime.time_module.sleep", lambda _: None)
+
+    try:
+        signal = Signal(ticker="005930", market="KR", action="buy", strategy="dual_momentum", strength=1.0, reason="entry")
+        signal_id = manager.persist_signal(signal)
+        intent = manager.create_order_intent(signal, signal_id=signal_id, quantity=1, price=70000)
+        submission = manager.persist_validated_order(intent)
+        manager.mark_submission_result(
+            submission.order_id,
+            broker_order_no="KR-OPEN-1",
+            broker_order_orgno="06010",
+            accepted=True,
+        )
+
+        runtime = TradingRuntime(
+            writer_queue=writer_queue,
+            token_manager=DummyTokenManager(),
+            api_client=api_client,
+            order_manager=manager,
+            settings=settings,
+            time_provider=lambda: datetime(2026, 4, 15, 15, 25, tzinfo=KST),
+        )
+
+        runtime.start()
+        runtime._run_pre_close_cancel_job("KR")
+        snapshot = runtime.health_snapshot()
+    finally:
+        if runtime is not None:
+            runtime.stop()
+        writer_queue.stop()
+
+    assert api_client.cancel_attempts == 2
+    assert [payload["order_no"] for payload in api_client.cancelled_orders] == ["KR-OPEN-1", "KR-OPEN-1"]
+    with get_read_session() as session:
+        order = session.get(Order, submission.order_id)
+
+    assert order is not None
+    assert order.status == "cancelled"
+    assert snapshot["last_error"] is None
+
+
+def test_trading_runtime_reports_missing_kr_cancel_metadata(tmp_path) -> None:
+    class DummyTokenManager:
+        def get_valid_token(self, env):
+            return "token"
+
+    class DummyApiClient:
+        def __init__(self) -> None:
+            self.cancel_calls = 0
+
+        def cancel_order(self, payload, access_token=None):
+            self.cancel_calls += 1
+            return {"rt_cd": "0", "msg_cd": "APBK0013", "msg1": "ok", "output": {"ODNO": payload["order_no"]}}
+
+        def normalize_cancel_result(self, payload):
+            from core.models import BrokerOrderResult
+
+            return BrokerOrderResult(accepted=True, broker_order_no=payload["output"]["ODNO"], raw_payload=payload)
+
+    settings = build_settings(tmp_path)
+    init_db(settings)
+    writer_queue = WriterQueue()
+    writer_queue.start()
+    api_client = DummyApiClient()
+    manager = OrderManager(writer_queue=writer_queue, settings=settings)
+    runtime = None
+
+    try:
+        signal = Signal(ticker="005930", market="KR", action="buy", strategy="dual_momentum", strength=1.0, reason="entry")
+        signal_id = manager.persist_signal(signal)
+        intent = manager.create_order_intent(signal, signal_id=signal_id, quantity=1, price=70000)
+        submission = manager.persist_validated_order(intent)
+        manager.mark_submission_result(submission.order_id, broker_order_no="KR-OPEN-1", accepted=True)
+
+        runtime = TradingRuntime(
+            writer_queue=writer_queue,
+            token_manager=DummyTokenManager(),
+            api_client=api_client,
+            order_manager=manager,
+            settings=settings,
+            time_provider=lambda: datetime(2026, 4, 15, 15, 25, tzinfo=KST),
+        )
+
+        runtime.start()
+        runtime._run_pre_close_cancel_job("KR")
+        snapshot = runtime.health_snapshot()
+    finally:
+        if runtime is not None:
+            runtime.stop()
+        writer_queue.stop()
+
+    assert api_client.cancel_calls == 0
+    assert snapshot["last_error"] == "pre_close_cancel_missing_order_orgno:1"
+    with get_read_session() as session:
+        order = session.get(Order, submission.order_id)
+
+    assert order is not None
+    assert order.status == "submitted"
 
 
 def test_healthcheck_reports_normal_when_runtime_is_healthy(tmp_path) -> None:

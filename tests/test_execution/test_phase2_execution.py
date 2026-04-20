@@ -109,6 +109,36 @@ def test_order_manager_cancel_flow(tmp_path) -> None:
     assert order.status == OrderStatus.CANCELLED.value
 
 
+def test_order_manager_persists_broker_order_orgno_on_submit_success(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    init_db(settings)
+    writer_queue = WriterQueue()
+    writer_queue.start()
+    manager = OrderManager(writer_queue=writer_queue, settings=settings)
+
+    try:
+        signal = Signal(ticker="005930", market="KR", action="buy", strategy="dual_momentum", strength=1.0, reason="entry")
+        signal_id = manager.persist_signal(signal)
+        intent = manager.create_order_intent(signal, signal_id=signal_id, quantity=1, price=70000)
+        submission = manager.persist_validated_order(intent)
+        manager.mark_submission_result(
+            submission.order_id,
+            broker_order_no="1234567890",
+            broker_order_orgno="06010",
+            accepted=True,
+        )
+    finally:
+        writer_queue.stop()
+
+    with get_read_session() as session:
+        order = session.get(Order, submission.order_id)
+
+    assert order is not None
+    assert order.status == OrderStatus.SUBMITTED.value
+    assert order.kis_order_no == "1234567890"
+    assert order.kis_order_orgno == "06010"
+
+
 def test_order_manager_uses_normalized_broker_result_on_submit_failure(tmp_path) -> None:
     class SubmitFailClient:
         def submit_order(self, payload, access_token=None):
@@ -246,7 +276,55 @@ def test_order_manager_moves_order_to_reconcile_hold_on_reconciliation_failure(t
 
 
 def test_order_manager_classifies_retryable_normalized_failure(tmp_path) -> None:
-    class RetryableFailClient:
+    class RetryableThenSuccessClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def submit_order(self, payload, access_token=None):
+            self.calls += 1
+            if self.calls == 1:
+                return {"rt_cd": "1", "msg_cd": "RATE_LIMIT", "msg1": "retry later"}
+            return {"rt_cd": "0", "msg_cd": "APBK0013", "msg1": "ok", "output": {"ODNO": "B-1"}}
+
+        def normalize_order_result(self, payload):
+            from core.models import BrokerOrderResult
+
+            accepted = payload["rt_cd"] == "0"
+            return BrokerOrderResult(
+                accepted=accepted,
+                broker_order_no=payload.get("output", {}).get("ODNO"),
+                error_code=None if accepted else payload["msg_cd"],
+                error_message=None if accepted else payload["msg1"],
+                raw_payload=payload,
+            )
+
+    settings = build_settings(tmp_path)
+    init_db(settings)
+    writer_queue = WriterQueue()
+    writer_queue.start()
+    manager = OrderManager(writer_queue=writer_queue, api_client=RetryableThenSuccessClient(), settings=settings)
+
+    try:
+        signal = Signal(ticker="005930", market="KR", action="buy", strategy="dual_momentum", strength=1.0, reason="entry")
+        signal_id = manager.persist_signal(signal)
+        intent = manager.create_order_intent(signal, signal_id=signal_id, quantity=1, price=70000)
+        submission = manager.persist_validated_order(intent)
+        manager.submit_retry_delay_sec = 0
+        manager.place_order(submission.order_id, {"ticker": "005930"})
+    finally:
+        writer_queue.stop()
+
+    with get_read_session() as session:
+        order = session.get(Order, submission.order_id)
+
+    assert order is not None
+    assert order.status == OrderStatus.SUBMITTED.value
+    assert order.retry_count == 1
+    assert order.kis_order_no == "B-1"
+
+
+def test_order_manager_fails_after_retryable_normalized_failures_are_exhausted(tmp_path) -> None:
+    class AlwaysRetryableFailClient:
         def submit_order(self, payload, access_token=None):
             return {"rt_cd": "1", "msg_cd": "RATE_LIMIT", "msg1": "retry later"}
 
@@ -264,13 +342,14 @@ def test_order_manager_classifies_retryable_normalized_failure(tmp_path) -> None
     init_db(settings)
     writer_queue = WriterQueue()
     writer_queue.start()
-    manager = OrderManager(writer_queue=writer_queue, api_client=RetryableFailClient(), settings=settings)
+    manager = OrderManager(writer_queue=writer_queue, api_client=AlwaysRetryableFailClient(), settings=settings)
 
     try:
         signal = Signal(ticker="005930", market="KR", action="buy", strategy="dual_momentum", strength=1.0, reason="entry")
         signal_id = manager.persist_signal(signal)
         intent = manager.create_order_intent(signal, signal_id=signal_id, quantity=1, price=70000)
         submission = manager.persist_validated_order(intent)
+        manager.submit_retry_delay_sec = 0
         manager.place_order(submission.order_id, {"ticker": "005930"})
     finally:
         writer_queue.stop()
@@ -279,8 +358,93 @@ def test_order_manager_classifies_retryable_normalized_failure(tmp_path) -> None
         order = session.get(Order, submission.order_id)
 
     assert order is not None
-    assert order.status == OrderStatus.VALIDATED.value
+    assert order.status == OrderStatus.FAILED.value
+    assert order.retry_count == 3
+
+
+def test_order_manager_retries_retryable_broker_api_error_before_success(tmp_path) -> None:
+    class FlakySubmitClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def submit_order(self, payload, access_token=None):
+            self.calls += 1
+            if self.calls == 1:
+                raise BrokerApiError("초당 거래건수를 초과하였습니다.", status_code=500)
+            return {"rt_cd": "0", "msg_cd": "APBK0013", "msg1": "ok", "output": {"ODNO": "B-2"}}
+
+        def normalize_order_result(self, payload):
+            from core.models import BrokerOrderResult
+
+            return BrokerOrderResult(
+                accepted=True,
+                broker_order_no=payload["output"]["ODNO"],
+                raw_payload=payload,
+            )
+
+    settings = build_settings(tmp_path)
+    init_db(settings)
+    writer_queue = WriterQueue()
+    writer_queue.start()
+    manager = OrderManager(writer_queue=writer_queue, api_client=FlakySubmitClient(), settings=settings)
+
+    try:
+        signal = Signal(ticker="005930", market="KR", action="buy", strategy="dual_momentum", strength=1.0, reason="entry")
+        signal_id = manager.persist_signal(signal)
+        intent = manager.create_order_intent(signal, signal_id=signal_id, quantity=1, price=70000)
+        submission = manager.persist_validated_order(intent)
+        manager.submit_retry_delay_sec = 0
+        manager.place_order(submission.order_id, {"ticker": "005930"})
+    finally:
+        writer_queue.stop()
+
+    with get_read_session() as session:
+        order = session.get(Order, submission.order_id)
+
+    assert order is not None
+    assert order.status == OrderStatus.SUBMITTED.value
     assert order.retry_count == 1
+    assert order.kis_order_no == "B-2"
+
+
+def test_order_manager_limits_auto_retry_to_remaining_retry_budget(tmp_path) -> None:
+    class AlwaysRetryableFailClient:
+        def submit_order(self, payload, access_token=None):
+            return {"rt_cd": "1", "msg_cd": "RATE_LIMIT", "msg1": "retry later"}
+
+        def normalize_order_result(self, payload):
+            from core.models import BrokerOrderResult
+
+            return BrokerOrderResult(
+                accepted=False,
+                error_code=payload["msg_cd"],
+                error_message=payload["msg1"],
+                raw_payload=payload,
+            )
+
+    settings = build_settings(tmp_path)
+    init_db(settings)
+    writer_queue = WriterQueue()
+    writer_queue.start()
+    manager = OrderManager(writer_queue=writer_queue, api_client=AlwaysRetryableFailClient(), settings=settings)
+
+    try:
+        signal = Signal(ticker="005930", market="KR", action="buy", strategy="dual_momentum", strength=1.0, reason="entry")
+        signal_id = manager.persist_signal(signal)
+        intent = manager.create_order_intent(signal, signal_id=signal_id, quantity=1, price=70000)
+        submission = manager.persist_validated_order(intent)
+        manager.record_submit_failure(submission.order_id, error_message="temporary", error_code="E1", retryable=True)
+        manager.submit_retry_delay_sec = 0
+        manager.place_order(submission.order_id, {"ticker": "005930"})
+    finally:
+        writer_queue.stop()
+
+    with get_read_session() as session:
+        order = session.get(Order, submission.order_id)
+
+    assert order is not None
+    assert order.retry_count == 3
+    assert order.status == OrderStatus.FAILED.value
 
 
 def test_fill_processor_handles_partial_and_full_fill(tmp_path) -> None:

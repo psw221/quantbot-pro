@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time as time_module
 from uuid import uuid4
 
 from sqlalchemy import func, select
@@ -18,7 +19,7 @@ from core.models import (
 )
 from core.settings import Settings, get_settings
 from core.exceptions import AuthenticationError, BrokerApiError, ReconciliationError
-from data.database import Order, ReconciliationRun, Signal as SignalRow, utc_now
+from data.database import Order, ReconciliationRun, Signal as SignalRow, get_read_session, utc_now
 from execution.kis_api import KISApiClient
 from execution.writer_queue import WriterQueue
 
@@ -44,6 +45,7 @@ class OrderManager:
         self.reconciliation_status = ReconciliationStatus.IDLE
         self.trading_blocked = False
         self.max_submit_retries = 3
+        self.submit_retry_delay_sec = 1.0
 
     def create_order_intent(
         self,
@@ -89,9 +91,24 @@ class OrderManager:
         )
         return future.result()
 
-    def mark_submission_result(self, order_id: int, *, broker_order_no: str | None, accepted: bool, error_message: str | None = None) -> None:
+    def mark_submission_result(
+        self,
+        order_id: int,
+        *,
+        broker_order_no: str | None,
+        accepted: bool,
+        broker_order_orgno: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
         future = self.writer_queue.submit(
-            lambda session: self._mark_submission_result(session, order_id, broker_order_no, accepted, error_message),
+            lambda session: self._mark_submission_result(
+                session,
+                order_id,
+                broker_order_no,
+                accepted,
+                broker_order_orgno,
+                error_message,
+            ),
             description="mark submission result",
         )
         future.result()
@@ -141,59 +158,75 @@ class OrderManager:
             )
             return
 
-        try:
-            response = self.api_client.submit_order(broker_payload, access_token=access_token)
-            result = self.api_client.normalize_order_result(response)
-        except AuthenticationError as exc:
-            self._handle_submit_failure(
-                order_id,
-                broker_payload=broker_payload,
-                error_message=str(exc) or "authentication_failed",
-                error_code="AUTH_ERROR",
-                decision=SubmitFailureDecision(
-                    failure_class=SubmitFailureClass.AUTH,
-                    retryable=False,
-                    block_trading=True,
-                ),
-            )
+        attempt_budget = self._remaining_submit_attempts(order_id)
+        if attempt_budget <= 0:
             return
-        except ReconciliationError as exc:
+        for attempt in range(1, attempt_budget + 1):
+            try:
+                response = self.api_client.submit_order(broker_payload, access_token=access_token)
+                result = self.api_client.normalize_order_result(response)
+            except AuthenticationError as exc:
+                self._handle_submit_failure(
+                    order_id,
+                    broker_payload=broker_payload,
+                    error_message=str(exc) or "authentication_failed",
+                    error_code="AUTH_ERROR",
+                    decision=SubmitFailureDecision(
+                        failure_class=SubmitFailureClass.AUTH,
+                        retryable=False,
+                        block_trading=True,
+                    ),
+                )
+                return
+            except ReconciliationError as exc:
+                self._handle_submit_failure(
+                    order_id,
+                    broker_payload=broker_payload,
+                    error_message=str(exc) or "reconciliation_required",
+                    error_code="RECONCILIATION_REQUIRED",
+                    decision=SubmitFailureDecision(
+                        failure_class=SubmitFailureClass.RECONCILE_HOLD,
+                        retryable=False,
+                        block_trading=True,
+                        require_reconciliation_hold=True,
+                    ),
+                )
+                return
+            except BrokerApiError as exc:
+                decision = self.classify_submit_exception(exc)
+                self._handle_submit_failure(
+                    order_id,
+                    broker_payload=broker_payload,
+                    error_message=str(exc) or "broker_api_error",
+                    error_code=None,
+                    decision=decision,
+                )
+                if self._should_retry_submit(decision, attempt, attempt_budget):
+                    self._sleep_before_submit_retry(attempt)
+                    continue
+                return
+
+            if result.accepted:
+                self.mark_submission_result(
+                    order_id,
+                    broker_order_no=result.broker_order_no,
+                    broker_order_orgno=result.broker_order_orgno,
+                    accepted=True,
+                )
+                return
+
+            decision = self.classify_submit_result(result)
             self._handle_submit_failure(
                 order_id,
                 broker_payload=broker_payload,
-                error_message=str(exc) or "reconciliation_required",
-                error_code="RECONCILIATION_REQUIRED",
-                decision=SubmitFailureDecision(
-                    failure_class=SubmitFailureClass.RECONCILE_HOLD,
-                    retryable=False,
-                    block_trading=True,
-                    require_reconciliation_hold=True,
-                ),
-            )
-            return
-        except BrokerApiError as exc:
-            decision = self.classify_submit_exception(exc)
-            self._handle_submit_failure(
-                order_id,
-                broker_payload=broker_payload,
-                error_message=str(exc) or "broker_api_error",
-                error_code=None,
+                error_message=result.error_message or "broker_submit_failed",
+                error_code=result.error_code,
                 decision=decision,
             )
+            if self._should_retry_submit(decision, attempt, attempt_budget):
+                self._sleep_before_submit_retry(attempt)
+                continue
             return
-
-        if result.accepted:
-            self.mark_submission_result(order_id, broker_order_no=result.broker_order_no, accepted=True)
-            return
-
-        decision = self.classify_submit_result(result)
-        self._handle_submit_failure(
-            order_id,
-            broker_payload=broker_payload,
-            error_message=result.error_message or "broker_submit_failed",
-            error_code=result.error_code,
-            decision=decision,
-        )
 
     def start_scheduled_poll(self) -> None:
         self.reconciliation_status = ReconciliationStatus.SCHEDULED_POLLING
@@ -292,6 +325,20 @@ class OrderManager:
             retryable=decision.retryable,
         )
 
+    def _should_retry_submit(self, decision: SubmitFailureDecision, attempt: int, attempt_budget: int) -> bool:
+        return decision.retryable and attempt < attempt_budget
+
+    def _sleep_before_submit_retry(self, attempt: int) -> None:
+        time_module.sleep(self.submit_retry_delay_sec * attempt)
+
+    def _remaining_submit_attempts(self, order_id: int) -> int:
+        with get_read_session() as session:
+            order = session.get(Order, order_id)
+            if order is None:
+                return self.max_submit_retries
+            remaining = self.max_submit_retries - int(order.retry_count or 0)
+        return max(0, remaining)
+
     @staticmethod
     def _insert_signal(session, signal: Signal) -> int:
         row = SignalRow(
@@ -348,13 +395,21 @@ class OrderManager:
         return OrderSubmission(order_id=row.id, client_order_id=row.client_order_id, status=OrderStatus.VALIDATED)
 
     @staticmethod
-    def _mark_submission_result(session, order_id: int, broker_order_no: str | None, accepted: bool, error_message: str | None) -> None:
+    def _mark_submission_result(
+        session,
+        order_id: int,
+        broker_order_no: str | None,
+        accepted: bool,
+        broker_order_orgno: str | None,
+        error_message: str | None,
+    ) -> None:
         row = session.get(Order, order_id)
         if row is None:
             return
         row.updated_at = utc_now()
         if accepted:
             row.kis_order_no = broker_order_no
+            row.kis_order_orgno = broker_order_orgno
             row.status = OrderStatus.SUBMITTED.value
             row.error_code = None
             row.error_message = None

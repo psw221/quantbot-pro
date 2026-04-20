@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 from sqlalchemy import text
@@ -23,14 +24,17 @@ class DummyResponse:
 
 
 class DummySession:
-    def __init__(self, payload: dict, status_code: int = 200) -> None:
+    def __init__(self, payload: dict | list[dict], status_code: int | list[int] = 200) -> None:
         self.payload = payload
         self.status_code = status_code
         self.calls: list[dict] = []
 
     def request(self, **kwargs):
         self.calls.append(kwargs)
-        return DummyResponse(self.payload, status_code=self.status_code)
+        index = len(self.calls) - 1
+        payload = self.payload[index] if isinstance(self.payload, list) else self.payload
+        status_code = self.status_code[index] if isinstance(self.status_code, list) else self.status_code
+        return DummyResponse(payload, status_code=status_code)
 
 
 def build_settings(tmp_path: Path) -> Settings:
@@ -219,6 +223,169 @@ def test_kis_client_supplies_domestic_open_orders_query_contract(tmp_path: Path)
     assert call["params"]["INQR_DVSN_2"] == "0"
 
 
+def test_kis_client_returns_empty_open_orders_when_vts_endpoint_is_unsupported(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    dummy_session = DummySession(
+        {
+            "rt_cd": "1",
+            "msg_cd": "OPSQ0001",
+            "msg1": "모의투자에서는 해당업무가 제공되지 않습니다.",
+        }
+    )
+    client = KISApiClient(settings=settings, session=dummy_session)
+
+    payload = client.list_open_orders("abc")
+
+    assert payload == {"output": []}
+
+
+def test_kis_client_supplies_domestic_daily_fill_query_contract(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    dummy_session = DummySession({"rt_cd": "0", "output1": []})
+    client = KISApiClient(settings=settings, session=dummy_session)
+
+    client.list_daily_order_fills("abc", market="KR", ticker="005930")
+
+    call = dummy_session.calls[0]
+    assert call["url"] == "https://example.test:29443/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
+    assert call["headers"]["tr_id"] == "VTTC0081R"
+    assert call["headers"]["custtype"] == "P"
+    assert call["params"]["CANO"] == "12345678"
+    assert call["params"]["ACNT_PRDT_CD"] == "01"
+    assert call["params"]["PDNO"] == "005930"
+    assert call["params"]["CCLD_DVSN"] == "00"
+    assert call["params"]["INQR_DVSN"] == "00"
+    assert call["params"]["INQR_DVSN_3"] == "00"
+    assert call["params"]["SLL_BUY_DVSN_CD"] == "00"
+
+
+def test_kis_client_supplies_domestic_submit_order_contract(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    dummy_session = DummySession(
+        [
+            {"HASH": "hash-value"},
+            {"rt_cd": "0", "msg_cd": "APBK0013", "msg1": "ok", "output": {"ODNO": "12345"}},
+        ]
+    )
+    client = KISApiClient(settings=settings, session=dummy_session)
+
+    client.submit_order(
+        {
+            "ticker": "005930",
+            "side": "buy",
+            "quantity": 1,
+            "order_type": "limit",
+            "price": 55000,
+        },
+        access_token="abc",
+    )
+
+    hash_call = dummy_session.calls[0]
+    order_call = dummy_session.calls[1]
+    assert hash_call["url"] == "https://example.test:29443/uapi/hashkey"
+    assert hash_call["json"]["PDNO"] == "005930"
+    assert order_call["url"] == "https://example.test:29443/uapi/domestic-stock/v1/trading/order-cash"
+    assert order_call["headers"]["tr_id"] == "VTTC0012U"
+    assert order_call["headers"]["custtype"] == "P"
+    assert order_call["headers"]["hashkey"] == "hash-value"
+    assert order_call["json"]["CANO"] == "12345678"
+    assert order_call["json"]["ACNT_PRDT_CD"] == "01"
+    assert order_call["json"]["PDNO"] == "005930"
+    assert order_call["json"]["ORD_DVSN"] == "00"
+    assert order_call["json"]["ORD_QTY"] == "1"
+    assert order_call["json"]["ORD_UNPR"] == "55000"
+
+
+def test_kis_client_supplies_domestic_cancel_order_contract(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    dummy_session = DummySession(
+        [
+            {"HASH": "hash-value"},
+            {"rt_cd": "0", "msg_cd": "APBK0013", "msg1": "ok", "output": {"ODNO": "12345"}},
+        ]
+    )
+    client = KISApiClient(settings=settings, session=dummy_session)
+
+    client.cancel_order(
+        {
+            "order_orgno": "06010",
+            "order_no": "0001234567",
+            "order_division": "00",
+            "qty_all_ord_yn": "Y",
+        },
+        access_token="abc",
+    )
+
+    hash_call = dummy_session.calls[0]
+    cancel_call = dummy_session.calls[1]
+    assert hash_call["url"] == "https://example.test:29443/uapi/hashkey"
+    assert cancel_call["url"] == "https://example.test:29443/uapi/domestic-stock/v1/trading/order-rvsecncl"
+    assert cancel_call["headers"]["tr_id"] == "VTTC0013U"
+    assert cancel_call["headers"]["custtype"] == "P"
+    assert cancel_call["headers"]["hashkey"] == "hash-value"
+    assert cancel_call["json"]["CANO"] == "12345678"
+    assert cancel_call["json"]["ACNT_PRDT_CD"] == "01"
+    assert cancel_call["json"]["KRX_FWDG_ORD_ORGNO"] == "06010"
+    assert cancel_call["json"]["ORGN_ODNO"] == "0001234567"
+    assert cancel_call["json"]["RVSE_CNCL_DVSN_CD"] == "02"
+    assert cancel_call["json"]["ORD_QTY"] == "0"
+    assert cancel_call["json"]["ORD_UNPR"] == "0"
+    assert cancel_call["json"]["QTY_ALL_ORD_YN"] == "Y"
+
+
+def test_kis_client_allows_domestic_order_tr_id_override(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    dummy_session = DummySession(
+        [
+            {"HASH": "hash-value"},
+            {"rt_cd": "0", "msg_cd": "APBK0013", "msg1": "ok", "output": {"ODNO": "12345"}},
+        ]
+    )
+    client = KISApiClient(settings=settings, session=dummy_session)
+
+    client.submit_order(
+        {
+            "ticker": "005930",
+            "side": "buy",
+            "quantity": 1,
+            "order_type": "limit",
+            "price": 55000,
+            "tr_id": "VTTC0802U",
+        },
+        access_token="abc",
+    )
+
+    order_call = dummy_session.calls[1]
+    assert order_call["headers"]["tr_id"] == "VTTC0802U"
+
+
+def test_kis_client_omits_hashkey_when_hash_request_fails(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    dummy_session = DummySession(
+        [
+            {"msg_cd": "ERR500", "msg1": "hash failed"},
+            {"rt_cd": "0", "msg_cd": "APBK0013", "msg1": "ok", "output": {"ODNO": "12345"}},
+        ],
+        status_code=[500, 200],
+    )
+    client = KISApiClient(settings=settings, session=dummy_session)
+
+    client.submit_order(
+        {
+            "ticker": "005930",
+            "side": "sell",
+            "quantity": 1,
+            "order_type": "market",
+            "price": 0,
+        },
+        access_token="abc",
+    )
+
+    order_call = dummy_session.calls[1]
+    assert order_call["headers"]["tr_id"] == "VTTC0011U"
+    assert "hashkey" not in order_call["headers"]
+
+
 def test_kis_client_builds_polling_snapshot(tmp_path: Path) -> None:
     settings = build_settings(tmp_path)
     client = KISApiClient(settings=settings, session=DummySession({"rt_cd": "0"}))
@@ -292,6 +459,59 @@ def test_kis_client_normalizes_order_result(tmp_path: Path) -> None:
     assert result.broker_order_no == "12345"
 
 
+def test_kis_client_normalizes_broker_order_orgno(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    client = KISApiClient(settings=settings, session=DummySession({"rt_cd": "0"}))
+
+    result = client.normalize_order_result(
+        {
+            "rt_cd": "0",
+            "msg_cd": "APBK0013",
+            "msg1": "ok",
+            "output": {"KRX_FWDG_ORD_ORGNO": "06010", "ODNO": "12345"},
+        }
+    )
+
+    assert result.accepted is True
+    assert result.broker_order_no == "12345"
+    assert result.broker_order_orgno == "06010"
+
+
+def test_kis_client_normalizes_daily_fill_rows(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    client = KISApiClient(settings=settings, session=DummySession({"rt_cd": "0"}))
+
+    result = client.normalize_daily_order_fills(
+        {
+            "output1": [
+                {
+                    "odno": "12345",
+                    "ord_orgno": "06010",
+                    "pdno": "005930",
+                    "sll_buy_dvsn_cd": "02",
+                    "ord_qty": "3",
+                    "tot_ccld_qty": "2",
+                    "rmn_qty": "1",
+                    "avg_prvs": "70100",
+                    "ord_dt": "20260420",
+                    "infm_tmd": "091501",
+                }
+            ]
+        }
+    )
+
+    assert len(result) == 1
+    snapshot = result[0]
+    assert snapshot.order_no == "12345"
+    assert snapshot.order_orgno == "06010"
+    assert snapshot.ticker == "005930"
+    assert snapshot.side == "buy"
+    assert snapshot.order_quantity == 3
+    assert snapshot.cumulative_filled_quantity == 2
+    assert snapshot.remaining_quantity == 1
+    assert snapshot.average_filled_price == 70100.0
+
+
 def test_kis_client_normalizes_failed_order_result(tmp_path: Path) -> None:
     settings = build_settings(tmp_path)
     client = KISApiClient(settings=settings, session=DummySession({"rt_cd": "0"}))
@@ -325,3 +545,47 @@ def test_kis_client_includes_response_body_excerpt_on_http_error(tmp_path: Path)
 
     assert "status" in message
     assert "server error" in message
+
+
+def test_migration_adds_kis_order_orgno_column_and_index(tmp_path: Path) -> None:
+    from scripts.migrate_v20260420 import migrate
+
+    settings = build_settings(tmp_path)
+    db_path = settings.database.absolute_path
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_order_id TEXT NOT NULL UNIQUE,
+                kis_order_no TEXT,
+                signal_id INTEGER NOT NULL,
+                ticker TEXT NOT NULL,
+                market TEXT NOT NULL,
+                strategy TEXT NOT NULL,
+                side TEXT NOT NULL,
+                order_type TEXT NOT NULL,
+                quantity INTEGER NOT NULL,
+                price REAL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                submitted_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                error_code TEXT,
+                error_message TEXT
+            )
+            """
+        )
+        connection.execute("CREATE INDEX idx_orders_kis_order_no ON orders (kis_order_no)")
+        connection.commit()
+
+    migrate(settings)
+
+    with sqlite3.connect(db_path) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(orders)")}
+        indexes = {row[1] for row in connection.execute("PRAGMA index_list(orders)")}
+
+    assert "kis_order_orgno" in columns
+    assert "idx_orders_kis_order_orgno" in indexes
