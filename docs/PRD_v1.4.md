@@ -485,6 +485,7 @@ Phase 2 기준 canonical 상태는 아래와 같습니다.
 - 대시보드는 read-only snapshot 계층으로 유지하고 아래 항목을 함께 요약합니다.
   - 현재 저장소 기준 Streamlit dashboard skeleton은 아래 기본 섹션을 이미 제공합니다.
     - health
+    - auto-trading diagnostics
     - open orders
     - recent trades
     - reconciliation summary

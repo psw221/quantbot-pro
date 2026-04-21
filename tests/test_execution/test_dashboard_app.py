@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from core.models import RuntimeHealthStatus
 from monitor.dashboard import DashboardSnapshot
 from monitor.healthcheck import HealthSnapshot
-from monitor.dashboard_app import render_dashboard
+from monitor.dashboard_app import build_auto_trading_diagnostics, render_dashboard
 
 
 class FakeStreamlit:
@@ -117,6 +117,16 @@ def test_render_dashboard_outputs_layer5_skeleton_sections() -> None:
                 "level": "INFO",
                 "module": "execution.runtime",
                 "message": "auto-trading cycle completed",
+                "extra": {
+                    "market": "KR",
+                    "signals_generated": 1,
+                    "signals_resolved": 1,
+                    "order_candidate_count": 1,
+                    "rejected_signal_count": 2,
+                    "orders_submitted": 1,
+                    "rejection_reason_summary": "existing_position_reentry_blocked:1,no_position_to_sell:1",
+                    "submitted_notional_krw": 217500.0,
+                },
                 "created_at": datetime(2026, 4, 21, 13, 15, tzinfo=timezone.utc),
             }
         ],
@@ -128,6 +138,7 @@ def test_render_dashboard_outputs_layer5_skeleton_sections() -> None:
     headers = [value for kind, value in fake_st.calls if kind == "subheader"]
     assert headers == [
         "Operations Summary",
+        "Auto-Trading Diagnostics",
         "Health",
         "Open Orders",
         "Recent Trades",
@@ -135,9 +146,58 @@ def test_render_dashboard_outputs_layer5_skeleton_sections() -> None:
         "Recent Logs",
     ]
     metrics = [value for kind, value in fake_st.calls if kind == "metric"]
-    assert len(metrics) == 8
+    assert len(metrics) == 16
     assert any(metric["label"] == "Trading Blocked" and metric["value"] == "No" for metric in metrics)
     assert any(metric["label"] == "Poll Stale" and metric["value"] == "Yes" for metric in metrics)
     assert any(metric["label"] == "Latest Backtest" and metric["value"] == "trend_following (KR)" for metric in metrics)
+    assert any(metric["label"] == "Top Rejections" and metric["value"] == "existing_position_reentry_blocked:1,no_position_to_sell:1" for metric in metrics)
     assert any(kind == "dataframe" for kind, _ in fake_st.calls)
     assert any(kind == "json" for kind, _ in fake_st.calls)
+
+
+def test_build_auto_trading_diagnostics_returns_latest_cycle_summary() -> None:
+    snapshot = DashboardSnapshot(
+        generated_at=datetime(2026, 4, 21, 14, 0, tzinfo=timezone.utc),
+        health=HealthSnapshot(
+            status=RuntimeHealthStatus.NORMAL,
+            trading_blocked=False,
+            scheduler_running=False,
+            writer_queue_running=False,
+            writer_queue_degraded=False,
+            queue_depth=0,
+            token_stale=False,
+            poll_stale=False,
+            last_token_refresh_at=None,
+            last_poll_success_at=None,
+            consecutive_poll_failures=0,
+            last_error=None,
+            details={"status_source": "external_canonical"},
+        ),
+        open_orders=[],
+        recent_trades=[],
+        latest_portfolio_snapshot=None,
+        reconciliation_summary={},
+        recent_manual_restores=[],
+        recent_backtests=[],
+        operational_summary={},
+        recent_logs=[
+            {
+                "log_id": 1,
+                "level": "INFO",
+                "module": "execution.runtime",
+                "message": "auto-trading cycle skipped",
+                "extra": {
+                    "market": "KR",
+                    "reason": "trading_blocked",
+                },
+                "created_at": datetime(2026, 4, 21, 13, 45, tzinfo=timezone.utc),
+            }
+        ],
+    )
+
+    diagnostics = build_auto_trading_diagnostics(snapshot)
+
+    assert diagnostics is not None
+    assert diagnostics["cycle_status"] == "skipped"
+    assert diagnostics["reason"] == "trading_blocked"
+    assert diagnostics["orders_submitted"] == "n/a"

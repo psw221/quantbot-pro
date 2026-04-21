@@ -200,6 +200,7 @@ def test_dashboard_snapshot_aggregates_runtime_and_recent_db_rows(tmp_path) -> N
     assert snapshot.operational_summary["recent_backtest_count"] == 1
     assert snapshot.operational_summary["latest_backtest_strategy"] == "dual_momentum"
     assert len(snapshot.recent_logs) == 1
+    assert snapshot.recent_logs[0]["extra"] is None
     assert payload["health"]["status"] == snapshot.health.status
     assert payload["health"]["details"]["status_source"] == "external_canonical"
     assert payload["operational_summary"]["latest_reconciliation_run_type"] == "manual_restore"

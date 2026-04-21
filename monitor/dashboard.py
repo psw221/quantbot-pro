@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -383,10 +384,21 @@ def _load_recent_logs(session: Session, *, limit: int) -> list[dict[str, Any]]:
             "level": row.level,
             "module": row.module,
             "message": row.message,
+            "extra": _coerce_log_extra(row.extra_json),
             "created_at": row.created_at,
         }
         for row in rows
     ]
+
+
+def _coerce_log_extra(extra_json: str | None) -> dict[str, Any] | None:
+    if not extra_json:
+        return None
+    try:
+        parsed = json.loads(extra_json)
+    except json.JSONDecodeError:
+        return {"raw": extra_json}
+    return parsed if isinstance(parsed, dict) else {"raw": extra_json}
 
 
 def dashboard_snapshot_to_dict(snapshot: DashboardSnapshot) -> dict[str, Any]:

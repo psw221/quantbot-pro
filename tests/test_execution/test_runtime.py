@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 from auth.token_manager import AccessToken
 from core.exceptions import AuthenticationError, BrokerApiError
@@ -198,6 +199,42 @@ def test_trading_runtime_runs_strategy_cycle_runner_when_enabled(tmp_path) -> No
     assert calls == [("KR", now)]
     assert recorder.logs[-1]["message"] == "auto-trading cycle completed"
     assert recorder.logs[-1]["extra"]["market"] == "KR"
+
+
+def test_trading_runtime_records_rejection_reason_summary_in_strategy_cycle_log(tmp_path) -> None:
+    settings = build_settings(tmp_path, auto_trading={"enabled": True})
+    writer_queue = WriterQueue()
+    now = datetime(2026, 4, 15, 10, 30, tzinfo=KST)
+    recorder = RecordingOperationsRecorder()
+    result = SimpleNamespace(
+        signals_generated=1,
+        signals_resolved=1,
+        orders_submitted=0,
+        order_candidates=[],
+        rejected_signals=[
+            SimpleNamespace(reason="existing_position_reentry_blocked"),
+            SimpleNamespace(reason="existing_position_reentry_blocked"),
+            SimpleNamespace(reason="no_position_to_sell"),
+        ],
+        details={"submitted_order_count": 0, "submitted_notional_krw": 0.0},
+    )
+    runtime = TradingRuntime(
+        writer_queue=writer_queue,
+        settings=settings,
+        time_provider=lambda: now,
+        strategy_cycle_runner=lambda market, as_of: result,
+        operations_recorder=recorder,
+    )
+
+    try:
+        runtime.start()
+        _mark_strategy_cycle_ready(runtime, now)
+        runtime._run_strategy_cycle_job("KR")
+    finally:
+        runtime.stop()
+
+    assert recorder.logs[-1]["message"] == "auto-trading cycle completed"
+    assert recorder.logs[-1]["extra"]["rejection_reason_summary"] == "existing_position_reentry_blocked:2,no_position_to_sell:1"
 
 
 def test_trading_runtime_skips_strategy_cycle_when_market_is_closed_and_logs_reason(tmp_path) -> None:

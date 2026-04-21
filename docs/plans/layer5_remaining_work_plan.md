@@ -29,7 +29,7 @@ Layer 5 모니터링 및 DR 잔여 작업 계획
 | L5-01 | Dashboard App Skeleton | done | Streamlit 앱에서 health, open orders, recent trades, reconciliation, logs 섹션이 보인다 |
 | L5-02 | Operations Summary Panel | done | `operational_summary`가 카드형으로 렌더링된다 |
 | L5-03 | Restore/Backtest Panels | todo | recent manual restores / recent backtests를 UI에서 볼 수 있다 |
-| L5-04 | Auto-Trading Diagnostics Panel | todo | 최근 cycle의 signals/candidates/rejections를 UI에서 볼 수 있다 |
+| L5-04 | Auto-Trading Diagnostics Panel | done | 최근 cycle의 signals/candidates/rejections를 UI에서 볼 수 있다 |
 | L5-05 | Strategy Budget Panel | todo | 현재 cash 기반 전략별 목표 주문금액과 단일 종목 상한을 UI에서 볼 수 있다 |
 | L5-06 | Tax Report Export Interface | todo | 연간 세후 추산 리포트를 JSON/CSV로 생성할 수 있다 |
 | L5-07 | Tax Dashboard Summary | todo | tax summary 핵심 숫자를 dashboard에서 볼 수 있다 |
@@ -44,6 +44,7 @@ Layer 5 모니터링 및 DR 잔여 작업 계획
 - `L5-01`은 `monitor/dashboard_app.py`를 추가해 read-only Streamlit 엔트리포인트를 만들고, `monitor/dashboard.py`의 read-model을 그대로 재사용한다.
 - `L5-01`의 health 표면은 runtime 직접 참조가 아니라 `token_store`, 최근 reconciliation, 최근 error log를 이용한 read-only fallback으로 구성한다.
 - `L5-02`는 `operational_summary`를 그대로 재사용하고, dashboard 상단에 health/block/stale/mismatch 중심 요약 카드를 배치한다.
+- `L5-04`는 `system_logs.extra_json`의 auto-trading cycle scalar payload를 사용해 최근 cycle의 signals/candidates/rejections와 skip/fail 이유를 요약한다.
 - `L5-06`부터 `L5-08`은 `tax/tax_calculator.py`를 계산 엔진으로 유지하고, export/output 계층만 추가한다.
 - `L5-09`와 `L5-10`은 notifier 자체를 바꾸지 않고 call-site만 연결한다.
 - `L5-11`은 이번 계획에서 기본적으로 deferred를 추천한다. 현재 `fx_alert`는 notifier 표면만 있고 자동 호출 정책이 없다.
@@ -79,17 +80,16 @@ python -m compileall monitor tax scripts tests main.py
 - restore telegram integration tests
 
 ## Recommended Start Order
-1. `L5-04 Auto-Trading Diagnostics Panel`
-2. `L5-05 Strategy Budget Panel`
-3. `L5-06 Tax Report Export Interface`
-4. `L5-07 Tax Dashboard Summary`
-5. `L5-09 DR Telegram Integration`
-6. `L5-10 Reconcile Hold Notification`
-7. `L5-13 Runbook/Usage Docs`
+1. `L5-05 Strategy Budget Panel`
+2. `L5-06 Tax Report Export Interface`
+3. `L5-07 Tax Dashboard Summary`
+4. `L5-09 DR Telegram Integration`
+5. `L5-10 Reconcile Hold Notification`
+6. `L5-13 Runbook/Usage Docs`
 
 ## First Recommended Task
-- `L5-04 Auto-Trading Diagnostics Panel`
+- `L5-05 Strategy Budget Panel`
 - 이유:
-  - `L5-01`, `L5-02`로 기본 화면과 운영 상태 요약은 갖춰졌다.
-  - 다음은 실제 auto-trading cycle의 signals/candidates/rejections를 보여줘야 주문이 없을 때도 원인을 UI에서 바로 해석할 수 있다.
-  - 이후 `strategy budget`, `tax summary`를 같은 화면에 순차적으로 확장하기 쉽다.
+  - `L5-01`, `L5-02`, `L5-04`로 기본 화면, 운영 상태, auto-trading 진단까지 갖춰졌다.
+  - 다음은 sizing/allocation 숫자를 같이 보여줘야 “왜 1주가 나왔는지”를 UI에서 바로 해석할 수 있다.
+  - 이후 `tax summary`와 `DR alerts`를 같은 운영 화면에 순차적으로 확장하기 쉽다.

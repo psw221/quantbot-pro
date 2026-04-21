@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time as time_module
+from collections import Counter
 from dataclasses import asdict, replace
 from datetime import datetime, time, timedelta, timezone
 from typing import Callable
@@ -327,6 +328,9 @@ class TradingRuntime:
         rejected_signals = getattr(result, "rejected_signals", None)
         if isinstance(rejected_signals, list):
             extra["rejected_signal_count"] = len(rejected_signals)
+            rejection_reason_summary = self._build_rejection_reason_summary(rejected_signals)
+            if rejection_reason_summary is not None:
+                extra["rejection_reason_summary"] = rejection_reason_summary
 
         details = getattr(result, "details", None)
         if isinstance(details, dict):
@@ -337,6 +341,18 @@ class TradingRuntime:
             if isinstance(submitted_notional, (int, float)):
                 extra["submitted_notional_krw"] = float(submitted_notional)
         return extra
+
+    @staticmethod
+    def _build_rejection_reason_summary(rejected_signals: list[object]) -> str | None:
+        reason_counter: Counter[str] = Counter()
+        for item in rejected_signals:
+            reason = getattr(item, "reason", None)
+            if isinstance(reason, str) and reason:
+                reason_counter[reason] += 1
+
+        if not reason_counter:
+            return None
+        return ",".join(f"{reason}:{count}" for reason, count in sorted(reason_counter.items()))
 
     def _record_strategy_cycle_log(
         self,

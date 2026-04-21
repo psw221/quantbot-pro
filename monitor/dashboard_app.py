@@ -11,6 +11,7 @@ def render_dashboard(snapshot: DashboardSnapshot, *, st_module: Any) -> None:
     st_module.title("QuantBot Pro Dashboard")
     st_module.caption(f"generated_at={_format_value(snapshot.generated_at)}")
     render_operations_summary_panel(snapshot, st_module=st_module)
+    render_auto_trading_diagnostics_panel(snapshot, st_module=st_module)
 
     st_module.subheader("Health")
     st_module.json(
@@ -70,6 +71,63 @@ def render_operations_summary_panel(snapshot: DashboardSnapshot, *, st_module: A
         column.metric(label=label, value=value)
 
 
+def render_auto_trading_diagnostics_panel(snapshot: DashboardSnapshot, *, st_module: Any) -> None:
+    st_module.subheader("Auto-Trading Diagnostics")
+    diagnostics = build_auto_trading_diagnostics(snapshot)
+    if diagnostics is None:
+        st_module.info("No recent auto-trading cycle logs")
+        return
+
+    cards = [
+        ("Cycle Status", diagnostics["cycle_status"]),
+        ("Market", diagnostics["market"]),
+        ("Signals", diagnostics["signals_generated"]),
+        ("Resolved", diagnostics["signals_resolved"]),
+        ("Candidates", diagnostics["order_candidate_count"]),
+        ("Rejected", diagnostics["rejected_signal_count"]),
+        ("Submitted", diagnostics["orders_submitted"]),
+        ("Top Rejections", diagnostics["rejection_reason_summary"]),
+    ]
+    columns = st_module.columns(4)
+    for index, (label, value) in enumerate(cards):
+        columns[index % len(columns)].metric(label=label, value=value)
+
+    st_module.json(
+        {
+            "message": diagnostics["message"],
+            "created_at": diagnostics["created_at"],
+            "reason": diagnostics["reason"],
+            "error_message": diagnostics["error_message"],
+            "submitted_notional_krw": diagnostics["submitted_notional_krw"],
+        }
+    )
+
+
+def build_auto_trading_diagnostics(snapshot: DashboardSnapshot) -> dict[str, Any] | None:
+    for row in snapshot.recent_logs:
+        message = row.get("message")
+        if not isinstance(message, str) or not message.startswith("auto-trading cycle"):
+            continue
+        extra = row.get("extra")
+        extra_fields = extra if isinstance(extra, dict) else {}
+        return {
+            "message": message,
+            "cycle_status": _extract_cycle_status(message),
+            "market": str(extra_fields.get("market") or "n/a"),
+            "signals_generated": _format_metric_value(extra_fields.get("signals_generated")),
+            "signals_resolved": _format_metric_value(extra_fields.get("signals_resolved")),
+            "order_candidate_count": _format_metric_value(extra_fields.get("order_candidate_count")),
+            "rejected_signal_count": _format_metric_value(extra_fields.get("rejected_signal_count")),
+            "orders_submitted": _format_metric_value(extra_fields.get("orders_submitted")),
+            "rejection_reason_summary": str(extra_fields.get("rejection_reason_summary") or "n/a"),
+            "reason": str(extra_fields.get("reason") or "n/a"),
+            "error_message": str(extra_fields.get("error_message") or "n/a"),
+            "submitted_notional_krw": _format_metric_value(extra_fields.get("submitted_notional_krw")),
+            "created_at": _format_value(row.get("created_at")),
+        }
+    return None
+
+
 def _render_rows(st_module: Any, *, rows: list[dict[str, Any]], empty_message: str) -> None:
     if not rows:
         st_module.info(empty_message)
@@ -107,6 +165,19 @@ def _format_backtest_summary(summary: dict[str, Any]) -> str:
     if not market:
         return str(strategy)
     return f"{strategy} ({market})"
+
+
+def _extract_cycle_status(message: str) -> str:
+    suffix = message.removeprefix("auto-trading cycle").strip()
+    return suffix or "unknown"
+
+
+def _format_metric_value(value: Any) -> str:
+    if isinstance(value, float):
+        return f"{value:.2f}"
+    if value is None:
+        return "n/a"
+    return str(value)
 
 
 def main() -> None:
