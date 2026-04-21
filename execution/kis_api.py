@@ -222,6 +222,30 @@ class KISApiClient:
             access_token=access_token,
         )
 
+    def get_daily_price_history(
+        self,
+        access_token: str,
+        *,
+        ticker: str,
+        start_date: str,
+        end_date: str,
+        period_code: str = "D",
+        adjusted_price: bool = False,
+    ) -> dict[str, Any]:
+        return self.request(
+            "GET",
+            "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
+            params=self._domestic_daily_price_params(
+                ticker=ticker,
+                start_date=start_date,
+                end_date=end_date,
+                period_code=period_code,
+                adjusted_price=adjusted_price,
+            ),
+            headers={"tr_id": self._domestic_daily_price_tr_id(), "custtype": "P"},
+            access_token=access_token,
+        )
+
     def request_hashkey(self, payload: dict[str, Any], *, access_token: str | None = None) -> str | None:
         try:
             response = self.request(
@@ -435,6 +459,35 @@ class KISApiClient:
             )
         return normalized
 
+    def normalize_daily_price_history(
+        self,
+        payload: dict[str, Any],
+        *,
+        ticker: str,
+        default_market: str = "KR",
+    ) -> list[dict[str, Any]]:
+        rows = payload.get("output2") or payload.get("output1") or payload.get("output") or []
+        normalized: list[dict[str, Any]] = []
+        for row in rows:
+            trade_date = row.get("stck_bsop_date") or row.get("STCK_BSOP_DATE") or row.get("date")
+            close = row.get("stck_clpr") or row.get("STCK_CLPR") or row.get("close")
+            high = row.get("stck_hgpr") or row.get("STCK_HGPR") or row.get("high")
+            low = row.get("stck_lwpr") or row.get("STCK_LWPR") or row.get("low")
+            if trade_date in (None, "") or close in (None, ""):
+                continue
+            normalized.append(
+                {
+                    "ticker": ticker,
+                    "market": self._normalize_market(default_market, default_market=default_market),
+                    "timestamp": datetime.strptime(str(trade_date), "%Y%m%d").replace(tzinfo=UTC),
+                    "close": float(close),
+                    "high": None if high in (None, "") else float(high),
+                    "low": None if low in (None, "") else float(low),
+                }
+            )
+        normalized.sort(key=lambda row: row["timestamp"])
+        return normalized
+
     def build_polling_snapshot(
         self,
         *,
@@ -551,6 +604,24 @@ class KISApiClient:
             "CTX_AREA_NK100": "",
         }
 
+    def _domestic_daily_price_params(
+        self,
+        *,
+        ticker: str,
+        start_date: str,
+        end_date: str,
+        period_code: str,
+        adjusted_price: bool,
+    ) -> dict[str, str]:
+        return {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": str(ticker),
+            "FID_INPUT_DATE_1": str(start_date),
+            "FID_INPUT_DATE_2": str(end_date),
+            "FID_PERIOD_DIV_CODE": str(period_code),
+            "FID_ORG_ADJ_PRC": "1" if adjusted_price else "0",
+        }
+
     def _domestic_order_payload(self, payload: dict[str, Any]) -> dict[str, str]:
         ticker = payload.get("PDNO") or payload.get("ticker")
         quantity = payload.get("ORD_QTY") if "ORD_QTY" in payload else payload.get("quantity")
@@ -665,6 +736,9 @@ class KISApiClient:
 
     def _domestic_daily_fill_tr_id(self) -> str:
         return "VTTC0081R" if self.env == RuntimeEnv.VTS else "TTTC0081R"
+
+    def _domestic_daily_price_tr_id(self) -> str:
+        return "FHKST03010100"
 
     def _is_vts_domestic_open_orders_unsupported(self, exc: BrokerApiError) -> bool:
         if self.env != RuntimeEnv.VTS:

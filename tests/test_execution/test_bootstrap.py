@@ -3,9 +3,11 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
 from sqlalchemy import text
 
 from auth.token_manager import TokenManager
+from core.exceptions import ConfigurationError
 from core.settings import Settings
 from data.database import TokenStore, get_read_session, init_db, utc_now
 from execution.kis_api import KISApiClient
@@ -37,57 +39,93 @@ class DummySession:
         return DummyResponse(payload, status_code=status_code)
 
 
-def build_settings(tmp_path: Path) -> Settings:
-    return Settings.model_validate(
-        {
-            "env": "vts",
-            "allocation": {"domestic": 0.60, "overseas": 0.30, "cash_buffer": 0.10},
-            "strategy_weights": {
-                "dual_momentum": 0.30,
-                "trend_following": 0.25,
-                "factor_investing": 0.45,
+def build_settings(tmp_path: Path, *, auto_trading: dict | None = None) -> Settings:
+    payload = {
+        "env": "vts",
+        "allocation": {"domestic": 0.60, "overseas": 0.30, "cash_buffer": 0.10},
+        "strategy_weights": {
+            "dual_momentum": 0.30,
+            "trend_following": 0.25,
+            "factor_investing": 0.45,
+        },
+        "auto_trading": {
+            "enabled": False,
+            "markets": ["KR"],
+            "strategies": ["dual_momentum", "trend_following"],
+            "max_orders_per_cycle": 1,
+            "max_order_notional_per_cycle": 500000,
+            "allow_new_entries": True,
+            "allow_exits": True,
+            "kr": {
+                "schedule_cron": "*/15 9-15 * * 1-5",
             },
-            "database": {"path": str(tmp_path / "quantbot.db"), "busy_timeout_ms": 5000},
-            "logging": {"level": "INFO", "directory": str(tmp_path / "logs")},
-            "kis": {
-                "rate_limit_per_sec": 20,
-                "request_timeout_sec": 3,
-                "credentials": {
-                    "app_key": "key12345",
-                    "app_secret": "secret12345",
-                    "account_no": "12345678",
-                    "product_code": "01",
+        },
+        "database": {"path": str(tmp_path / "quantbot.db"), "busy_timeout_ms": 5000},
+        "logging": {"level": "INFO", "directory": str(tmp_path / "logs")},
+        "kis": {
+            "rate_limit_per_sec": 20,
+            "request_timeout_sec": 3,
+            "credentials": {
+                "app_key": "key12345",
+                "app_secret": "secret12345",
+                "account_no": "12345678",
+                "product_code": "01",
+            },
+            "environments": {
+                "vts": {
+                    "rest_base_url": "https://example.test:29443",
+                    "websocket_base_url": "ws://example.test:31000",
+                    "token_path": "/oauth2/tokenP",
                 },
-                "environments": {
-                    "vts": {
-                        "rest_base_url": "https://example.test:29443",
-                        "websocket_base_url": "ws://example.test:31000",
-                        "token_path": "/oauth2/tokenP",
-                    },
-                    "prod": {
-                        "rest_base_url": "https://prod.test:9443",
-                        "websocket_base_url": "ws://prod.test:21000",
-                        "token_path": "/oauth2/tokenP",
-                    },
+                "prod": {
+                    "rest_base_url": "https://prod.test:9443",
+                    "websocket_base_url": "ws://prod.test:21000",
+                    "token_path": "/oauth2/tokenP",
                 },
             },
-            "rebalancing": {
-                "macro_threshold_pct_point": 0.05,
-                "macro_check": "monthly_eom",
-                "broker_poll_interval_min": 10,
-            },
-            "risk": {
-                "max_single_stock_domestic": 0.05,
-                "max_single_stock_overseas": 0.03,
-                "max_sector_weight": 0.25,
-                "stop_loss_domestic": -0.07,
-                "stop_loss_overseas": -0.05,
-                "trailing_stop": -0.10,
-                "daily_max_loss": -0.02,
-                "max_drawdown_limit": -0.15,
-            },
-        }
-    )
+        },
+        "rebalancing": {
+            "macro_threshold_pct_point": 0.05,
+            "macro_check": "monthly_eom",
+            "broker_poll_interval_min": 10,
+        },
+        "risk": {
+            "max_single_stock_domestic": 0.05,
+            "max_single_stock_overseas": 0.03,
+            "max_sector_weight": 0.25,
+            "stop_loss_domestic": -0.07,
+            "stop_loss_overseas": -0.05,
+            "trailing_stop": -0.10,
+            "daily_max_loss": -0.02,
+            "max_drawdown_limit": -0.15,
+        },
+    }
+    if auto_trading is not None:
+        merged_auto_trading = {**payload["auto_trading"], **auto_trading}
+        if "kr" in auto_trading:
+            merged_auto_trading["kr"] = {
+                **payload["auto_trading"]["kr"],
+                **auto_trading["kr"],
+            }
+        payload["auto_trading"] = merged_auto_trading
+    return Settings.model_validate(payload)
+
+
+def test_settings_accept_auto_trading_contract(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path, auto_trading={"enabled": True})
+
+    assert settings.auto_trading.enabled is True
+    assert settings.auto_trading.markets == ["KR"]
+    assert settings.auto_trading.strategies == ["dual_momentum", "trend_following"]
+    assert settings.auto_trading.kr.schedule_cron == "*/15 9-15 * * 1-5"
+
+
+def test_settings_reject_auto_trading_scope_outside_phase4_kr_dual_trend(tmp_path: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        build_settings(tmp_path, auto_trading={"markets": ["US"]})
+
+    with pytest.raises(ConfigurationError):
+        build_settings(tmp_path, auto_trading={"strategies": ["factor_investing"]})
 
 
 def test_init_db_applies_wal_mode(tmp_path: Path) -> None:
@@ -257,6 +295,30 @@ def test_kis_client_supplies_domestic_daily_fill_query_contract(tmp_path: Path) 
     assert call["params"]["INQR_DVSN"] == "00"
     assert call["params"]["INQR_DVSN_3"] == "00"
     assert call["params"]["SLL_BUY_DVSN_CD"] == "00"
+
+
+def test_kis_client_supplies_domestic_daily_price_query_contract(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    dummy_session = DummySession({"rt_cd": "0", "output2": []})
+    client = KISApiClient(settings=settings, session=dummy_session)
+
+    client.get_daily_price_history(
+        "abc",
+        ticker="005930",
+        start_date="20260101",
+        end_date="20260421",
+    )
+
+    call = dummy_session.calls[0]
+    assert call["url"] == "https://example.test:29443/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
+    assert call["headers"]["tr_id"] == "FHKST03010100"
+    assert call["headers"]["custtype"] == "P"
+    assert call["params"]["FID_COND_MRKT_DIV_CODE"] == "J"
+    assert call["params"]["FID_INPUT_ISCD"] == "005930"
+    assert call["params"]["FID_INPUT_DATE_1"] == "20260101"
+    assert call["params"]["FID_INPUT_DATE_2"] == "20260421"
+    assert call["params"]["FID_PERIOD_DIV_CODE"] == "D"
+    assert call["params"]["FID_ORG_ADJ_PRC"] == "0"
 
 
 def test_kis_client_supplies_domestic_submit_order_contract(tmp_path: Path) -> None:
@@ -510,6 +572,36 @@ def test_kis_client_normalizes_daily_fill_rows(tmp_path: Path) -> None:
     assert snapshot.cumulative_filled_quantity == 2
     assert snapshot.remaining_quantity == 1
     assert snapshot.average_filled_price == 70100.0
+
+
+def test_kis_client_normalizes_daily_price_rows(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    client = KISApiClient(settings=settings, session=DummySession({"rt_cd": "0"}))
+
+    result = client.normalize_daily_price_history(
+        {
+            "output2": [
+                {
+                    "stck_bsop_date": "20260418",
+                    "stck_clpr": "71000",
+                    "stck_hgpr": "71500",
+                    "stck_lwpr": "70500",
+                },
+                {
+                    "stck_bsop_date": "20260417",
+                    "stck_clpr": "70000",
+                    "stck_hgpr": "70500",
+                    "stck_lwpr": "69500",
+                },
+            ]
+        },
+        ticker="005930",
+    )
+
+    assert len(result) == 2
+    assert result[0]["timestamp"].strftime("%Y%m%d") == "20260417"
+    assert result[0]["close"] == 70000.0
+    assert result[1]["high"] == 71500.0
 
 
 def test_kis_client_normalizes_failed_order_result(tmp_path: Path) -> None:

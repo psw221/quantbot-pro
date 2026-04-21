@@ -6,6 +6,7 @@ from auth.token_manager import AccessToken
 from core.exceptions import AuthenticationError, BrokerApiError
 from core.models import ExecutionFill
 from core.models import ReconciliationResult, ReconciliationStatus, RuntimeHealthStatus, RuntimeState
+from core.settings import RuntimeEnv
 from data.database import Order, get_read_session, init_db
 from execution.fill_processor import FillProcessor
 from execution.runtime import (
@@ -13,6 +14,7 @@ from execution.runtime import (
     HEALTHCHECK_JOB_ID,
     PRE_CLOSE_CANCEL_KR_JOB_ID,
     PRE_CLOSE_CANCEL_US_JOB_ID,
+    STRATEGY_CYCLE_KR_JOB_ID,
     TOKEN_REFRESH_JOB_ID,
     TradingRuntime,
     get_market_session_window,
@@ -28,6 +30,76 @@ from core.models import Signal
 
 
 KST = timezone(timedelta(hours=9))
+
+
+class RecordingOperationsRecorder:
+    def __init__(self) -> None:
+        self.logs: list[dict[str, object]] = []
+
+    def record_system_log(
+        self,
+        payload=None,
+        /,
+        *,
+        level=None,
+        module=None,
+        message=None,
+        extra=None,
+        created_at=None,
+    ) -> int:
+        self.logs.append(
+            {
+                "level": level,
+                "module": module,
+                "message": message,
+                "extra": dict(extra or {}),
+                "created_at": created_at,
+            }
+        )
+        return len(self.logs)
+
+
+class RecordingTelegramNotifier:
+    def __init__(self) -> None:
+        self.events: list[dict[str, object]] = []
+
+    def send_event(
+        self,
+        event_type,
+        message,
+        context=None,
+        *,
+        severity="warning",
+        title=None,
+        created_at=None,
+        source_env=None,
+    ):
+        self.events.append(
+            {
+                "event_type": event_type,
+                "message": message,
+                "context": dict(context or {}),
+                "severity": severity,
+                "title": title,
+                "created_at": created_at,
+                "source_env": source_env,
+            }
+        )
+        return None
+
+
+class QueueHealthStub:
+    def __init__(self, *, running: bool = True, degraded: bool = False, queue_depth: int = 0, last_error: str | None = None) -> None:
+        self.running = running
+        self.degraded = degraded
+        self.queue_depth = queue_depth
+        self.last_error = last_error
+
+
+def _mark_strategy_cycle_ready(runtime: TradingRuntime, now: datetime) -> None:
+    now_utc = now.astimezone(timezone.utc)
+    runtime.state.last_token_refresh_at = now_utc - timedelta(hours=1)
+    runtime.state.last_poll_success_at = now_utc - timedelta(minutes=5)
 
 
 def test_kr_market_session_boundaries() -> None:
@@ -86,6 +158,237 @@ def test_trading_runtime_registers_expected_jobs(tmp_path) -> None:
         PRE_CLOSE_CANCEL_US_JOB_ID,
         HEALTHCHECK_JOB_ID,
     }
+
+
+def test_trading_runtime_registers_strategy_cycle_job_when_auto_trading_enabled(tmp_path) -> None:
+    settings = build_settings(tmp_path, auto_trading={"enabled": True})
+    writer_queue = WriterQueue()
+    runtime = TradingRuntime(writer_queue=writer_queue, settings=settings)
+
+    try:
+        runtime.start()
+        jobs = {job.id for job in runtime.scheduler.get_jobs()}
+    finally:
+        runtime.stop()
+
+    assert STRATEGY_CYCLE_KR_JOB_ID in jobs
+
+
+def test_trading_runtime_runs_strategy_cycle_runner_when_enabled(tmp_path) -> None:
+    settings = build_settings(tmp_path, auto_trading={"enabled": True})
+    writer_queue = WriterQueue()
+    now = datetime(2026, 4, 15, 9, 15, tzinfo=KST)
+    calls: list[tuple[str, datetime]] = []
+    recorder = RecordingOperationsRecorder()
+    runtime = TradingRuntime(
+        writer_queue=writer_queue,
+        settings=settings,
+        time_provider=lambda: now,
+        strategy_cycle_runner=lambda market, as_of: calls.append((market, as_of)),
+        operations_recorder=recorder,
+    )
+
+    try:
+        runtime.start()
+        _mark_strategy_cycle_ready(runtime, now)
+        runtime._run_strategy_cycle_job("KR")
+    finally:
+        runtime.stop()
+
+    assert calls == [("KR", now)]
+    assert recorder.logs[-1]["message"] == "auto-trading cycle completed"
+    assert recorder.logs[-1]["extra"]["market"] == "KR"
+
+
+def test_trading_runtime_skips_strategy_cycle_when_market_is_closed_and_logs_reason(tmp_path) -> None:
+    settings = build_settings(tmp_path, auto_trading={"enabled": True})
+    writer_queue = WriterQueue()
+    now = datetime(2026, 4, 15, 8, 30, tzinfo=KST)
+    calls: list[tuple[str, datetime]] = []
+    recorder = RecordingOperationsRecorder()
+    runtime = TradingRuntime(
+        writer_queue=writer_queue,
+        settings=settings,
+        time_provider=lambda: now,
+        strategy_cycle_runner=lambda market, as_of: calls.append((market, as_of)),
+        operations_recorder=recorder,
+    )
+
+    try:
+        runtime.start()
+        _mark_strategy_cycle_ready(runtime, now)
+        runtime._run_strategy_cycle_job("KR")
+    finally:
+        runtime.stop()
+
+    assert calls == []
+    assert recorder.logs[-1]["message"] == "auto-trading cycle skipped"
+    assert recorder.logs[-1]["extra"]["reason"] == "market_closed"
+
+
+def test_trading_runtime_skips_strategy_cycle_when_trading_is_blocked_and_logs_reason(tmp_path) -> None:
+    settings = build_settings(tmp_path, auto_trading={"enabled": True})
+    writer_queue = WriterQueue()
+    now = datetime(2026, 4, 15, 9, 15, tzinfo=KST)
+    calls: list[tuple[str, datetime]] = []
+    recorder = RecordingOperationsRecorder()
+    runtime = TradingRuntime(
+        writer_queue=writer_queue,
+        settings=settings,
+        time_provider=lambda: now,
+        strategy_cycle_runner=lambda market, as_of: calls.append((market, as_of)),
+        operations_recorder=recorder,
+    )
+
+    try:
+        runtime.start()
+        _mark_strategy_cycle_ready(runtime, now)
+        runtime.state.trading_blocked = True
+        runtime._run_strategy_cycle_job("KR")
+    finally:
+        runtime.stop()
+
+    assert calls == []
+    assert recorder.logs[-1]["message"] == "auto-trading cycle skipped"
+    assert recorder.logs[-1]["extra"]["reason"] == "trading_blocked"
+    assert recorder.logs[-1]["extra"]["health_status"] == RuntimeHealthStatus.CRITICAL.value
+
+
+def test_trading_runtime_skips_strategy_cycle_when_polling_is_stale_and_logs_reason(tmp_path) -> None:
+    settings = build_settings(tmp_path, auto_trading={"enabled": True})
+    writer_queue = WriterQueue()
+    now = datetime(2026, 4, 15, 9, 15, tzinfo=KST)
+    calls: list[tuple[str, datetime]] = []
+    recorder = RecordingOperationsRecorder()
+    runtime = TradingRuntime(
+        writer_queue=writer_queue,
+        settings=settings,
+        time_provider=lambda: now,
+        strategy_cycle_runner=lambda market, as_of: calls.append((market, as_of)),
+        operations_recorder=recorder,
+    )
+
+    try:
+        runtime.start()
+        runtime.state.last_token_refresh_at = now.astimezone(timezone.utc) - timedelta(hours=1)
+        runtime.state.last_poll_success_at = now.astimezone(timezone.utc) - timedelta(minutes=30)
+        runtime._run_strategy_cycle_job("KR")
+    finally:
+        runtime.stop()
+
+    assert calls == []
+    assert recorder.logs[-1]["message"] == "auto-trading cycle skipped"
+    assert recorder.logs[-1]["extra"]["reason"] == "polling_stale"
+    assert recorder.logs[-1]["extra"]["health_status"] == RuntimeHealthStatus.WARNING.value
+
+
+def test_trading_runtime_skips_strategy_cycle_when_writer_queue_is_degraded_and_logs_reason(tmp_path, monkeypatch) -> None:
+    settings = build_settings(tmp_path, auto_trading={"enabled": True})
+    writer_queue = WriterQueue()
+    now = datetime(2026, 4, 15, 9, 15, tzinfo=KST)
+    calls: list[tuple[str, datetime]] = []
+    recorder = RecordingOperationsRecorder()
+    runtime = TradingRuntime(
+        writer_queue=writer_queue,
+        settings=settings,
+        time_provider=lambda: now,
+        strategy_cycle_runner=lambda market, as_of: calls.append((market, as_of)),
+        operations_recorder=recorder,
+    )
+
+    try:
+        runtime.start()
+        _mark_strategy_cycle_ready(runtime, now)
+        monkeypatch.setattr(
+            runtime.writer_queue,
+            "health",
+            lambda: QueueHealthStub(running=True, degraded=True, queue_depth=0, last_error="queue degraded"),
+        )
+        runtime._run_strategy_cycle_job("KR")
+    finally:
+        runtime.stop()
+
+    assert calls == []
+    assert recorder.logs[-1]["message"] == "auto-trading cycle skipped"
+    assert recorder.logs[-1]["extra"]["reason"] == "writer_queue_degraded"
+    assert recorder.logs[-1]["extra"]["health_status"] == RuntimeHealthStatus.CRITICAL.value
+
+
+def test_trading_runtime_skips_strategy_cycle_outside_vts_environment(tmp_path) -> None:
+    settings = build_settings(tmp_path, auto_trading={"enabled": True}).model_copy(update={"env": RuntimeEnv.PROD})
+    writer_queue = WriterQueue()
+    now = datetime(2026, 4, 15, 9, 15, tzinfo=KST)
+    calls: list[tuple[str, datetime]] = []
+    recorder = RecordingOperationsRecorder()
+    runtime = TradingRuntime(
+        writer_queue=writer_queue,
+        settings=settings,
+        time_provider=lambda: now,
+        strategy_cycle_runner=lambda market, as_of: calls.append((market, as_of)),
+        operations_recorder=recorder,
+    )
+
+    try:
+        runtime.start()
+        _mark_strategy_cycle_ready(runtime, now)
+        runtime._run_strategy_cycle_job("KR")
+    finally:
+        runtime.stop()
+
+    assert calls == []
+    assert recorder.logs[-1]["message"] == "auto-trading cycle skipped"
+    assert recorder.logs[-1]["extra"]["reason"] == "non_vts_environment"
+
+
+def test_trading_runtime_records_strategy_cycle_failure_without_crashing(tmp_path) -> None:
+    settings = build_settings(tmp_path, auto_trading={"enabled": True})
+    writer_queue = WriterQueue()
+    now = datetime(2026, 4, 15, 9, 15, tzinfo=KST)
+    recorder = RecordingOperationsRecorder()
+
+    def failing_runner(market: str, as_of: datetime) -> None:
+        raise RuntimeError("strategy cycle exploded")
+
+    runtime = TradingRuntime(
+        writer_queue=writer_queue,
+        settings=settings,
+        time_provider=lambda: now,
+        strategy_cycle_runner=failing_runner,
+        operations_recorder=recorder,
+    )
+    snapshot_error = None
+
+    try:
+        runtime.start()
+        _mark_strategy_cycle_ready(runtime, now)
+        runtime._run_strategy_cycle_job("KR")
+        snapshot_error = runtime.state.last_error
+    finally:
+        runtime.stop()
+
+    assert snapshot_error == "strategy cycle exploded"
+    assert recorder.logs[-1]["message"] == "auto-trading cycle failed"
+    assert recorder.logs[-1]["extra"]["error_type"] == "RuntimeError"
+
+
+def test_trading_runtime_skips_strategy_cycle_runner_when_auto_trading_is_disabled(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    writer_queue = WriterQueue()
+    calls: list[tuple[str, datetime]] = []
+    runtime = TradingRuntime(
+        writer_queue=writer_queue,
+        settings=settings,
+        time_provider=lambda: datetime(2026, 4, 15, 9, 15, tzinfo=KST),
+        strategy_cycle_runner=lambda market, as_of: calls.append((market, as_of)),
+    )
+
+    try:
+        runtime.start()
+        runtime._run_strategy_cycle_job("KR")
+    finally:
+        runtime.stop()
+
+    assert calls == []
 
 
 def test_trading_runtime_start_and_stop_are_idempotent(tmp_path) -> None:
@@ -173,7 +476,13 @@ def test_trading_runtime_blocks_after_token_refresh_retries_exhausted(tmp_path) 
     settings = build_settings(tmp_path)
     writer_queue = WriterQueue()
     token_manager = FailingTokenManager()
-    runtime = TradingRuntime(writer_queue=writer_queue, token_manager=token_manager, settings=settings)
+    notifier = RecordingTelegramNotifier()
+    runtime = TradingRuntime(
+        writer_queue=writer_queue,
+        token_manager=token_manager,
+        settings=settings,
+        telegram_notifier=notifier,
+    )
 
     try:
         runtime.start()
@@ -185,6 +494,10 @@ def test_trading_runtime_blocks_after_token_refresh_retries_exhausted(tmp_path) 
     assert snapshot["trading_blocked"] is True
     assert snapshot["health_status"] == RuntimeHealthStatus.WARNING.value
     assert snapshot["last_error"] == "token refresh failed"
+    assert [event["event_type"] for event in notifier.events] == [
+        "token_refresh_failure",
+        "trading_blocked",
+    ]
 
 
 def test_trading_runtime_skips_polling_when_market_closed(tmp_path) -> None:
@@ -577,6 +890,7 @@ def test_trading_runtime_blocks_on_polling_mismatch(tmp_path) -> None:
     settings = build_settings(tmp_path)
     writer_queue = WriterQueue()
     order_manager = DummyOrderManager()
+    notifier = RecordingTelegramNotifier()
     runtime = TradingRuntime(
         writer_queue=writer_queue,
         token_manager=DummyTokenManager(),
@@ -585,6 +899,7 @@ def test_trading_runtime_blocks_on_polling_mismatch(tmp_path) -> None:
         reconciliation_service=DummyReconciliationService(),
         settings=settings,
         time_provider=lambda: datetime(2026, 4, 15, 9, 30, tzinfo=KST),
+        telegram_notifier=notifier,
     )
 
     try:
@@ -597,6 +912,35 @@ def test_trading_runtime_blocks_on_polling_mismatch(tmp_path) -> None:
     assert order_manager.holds == 1
     assert snapshot["trading_blocked"] is True
     assert snapshot["last_error"] == "polling_mismatch_detected"
+    assert [event["event_type"] for event in notifier.events] == [
+        "polling_mismatch",
+        "trading_blocked",
+    ]
+
+
+def test_trading_runtime_notifies_writer_queue_degraded_once(tmp_path, monkeypatch) -> None:
+    settings = build_settings(tmp_path)
+    writer_queue = WriterQueue()
+    notifier = RecordingTelegramNotifier()
+    runtime = TradingRuntime(
+        writer_queue=writer_queue,
+        settings=settings,
+        telegram_notifier=notifier,
+    )
+
+    try:
+        runtime.start()
+        monkeypatch.setattr(
+            runtime.writer_queue,
+            "health",
+            lambda: QueueHealthStub(running=True, degraded=True, queue_depth=0, last_error="queue degraded"),
+        )
+        runtime._refresh_health_status()
+        runtime._refresh_health_status()
+    finally:
+        runtime.stop()
+
+    assert [event["event_type"] for event in notifier.events] == ["writer_queue_degraded"]
 
 
 def test_trading_runtime_blocks_after_three_poll_failures(tmp_path) -> None:

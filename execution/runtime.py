@@ -13,7 +13,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from auth.token_manager import TokenManager
 from core.exceptions import AuthenticationError, BrokerApiError
 from core.models import ReconciliationStatus, RuntimeHealthStatus, RuntimeState
-from core.settings import Settings, get_settings
+from core.settings import RuntimeEnv, Settings, get_settings
 from data.database import Order, get_read_session
 from execution.fill_ingestion import BrokerFillIngestionService
 from execution.fill_processor import FillProcessor
@@ -21,6 +21,8 @@ from execution.kis_api import KISApiClient
 from execution.order_manager import OrderManager
 from execution.reconciliation import ReconciliationService
 from execution.writer_queue import WriterQueue
+from monitor.operations import OperationsRecorder
+from monitor.telegram_bot import TelegramNotifier
 
 
 KST = timezone(timedelta(hours=9))
@@ -30,11 +32,13 @@ BROKER_POLL_JOB_ID = "broker_poll"
 PRE_CLOSE_CANCEL_KR_JOB_ID = "pre_close_cancel_kr"
 PRE_CLOSE_CANCEL_US_JOB_ID = "pre_close_cancel_us"
 HEALTHCHECK_JOB_ID = "healthcheck"
+STRATEGY_CYCLE_KR_JOB_ID = "strategy_cycle_kr"
 TOKEN_REFRESH_MAX_ATTEMPTS = 3
 BROKER_POLL_QUERY_MAX_ATTEMPTS = 3
 BROKER_POLL_RETRY_DELAY_SEC = 1.0
 PRE_CLOSE_CANCEL_MAX_ATTEMPTS = 3
 PRE_CLOSE_CANCEL_RETRY_DELAY_SEC = 1.0
+AUTO_TRADING_LOG_MODULE = "execution.runtime"
 
 
 def to_kst(now: datetime) -> datetime:
@@ -102,9 +106,12 @@ class TradingRuntime:
         fill_processor: FillProcessor | None = None,
         fill_ingestion_service: BrokerFillIngestionService | None = None,
         reconciliation_service: ReconciliationService | None = None,
+        operations_recorder: OperationsRecorder | None = None,
+        telegram_notifier: TelegramNotifier | None = None,
         settings: Settings | None = None,
         scheduler: BackgroundScheduler | None = None,
         time_provider: Callable[[], datetime] | None = None,
+        strategy_cycle_runner: Callable[[str, datetime], object] | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.writer_queue = writer_queue
@@ -120,11 +127,15 @@ class TradingRuntime:
             BrokerFillIngestionService(api_client=self.api_client, settings=self.settings) if can_auto_ingest_fills else None
         )
         self.reconciliation_service = reconciliation_service
+        self.operations_recorder = operations_recorder or OperationsRecorder(writer_queue)
+        self.telegram_notifier = telegram_notifier
         self.scheduler = scheduler or BackgroundScheduler(timezone=KST)
         self.time_provider = time_provider or (lambda: datetime.now(KST))
+        self.strategy_cycle_runner = strategy_cycle_runner
         self.state = RuntimeState()
         self._jobs_registered = False
         self._keep_running = threading.Event()
+        self._active_notification_keys: set[str] = set()
 
     def start(self) -> None:
         if not self.writer_queue.health().running:
@@ -204,12 +215,201 @@ class TradingRuntime:
             id=HEALTHCHECK_JOB_ID,
             replace_existing=True,
         )
+        self._register_strategy_cycle_jobs()
+
+    def _register_strategy_cycle_jobs(self) -> None:
+        if not self.settings.auto_trading.enabled:
+            return
+
+        if "KR" in self.settings.auto_trading.markets:
+            self.scheduler.add_job(
+                lambda: self._run_strategy_cycle_job("KR"),
+                trigger=CronTrigger.from_crontab(self.settings.auto_trading.kr.schedule_cron, timezone=KST),
+                id=STRATEGY_CYCLE_KR_JOB_ID,
+                replace_existing=True,
+            )
+
+    def _run_strategy_cycle_job(self, market: str) -> None:
+        if not self.settings.auto_trading.enabled:
+            return
+        if self.strategy_cycle_runner is None:
+            return
+        as_of = self.time_provider()
+        skip_reason, skip_details = self._evaluate_strategy_cycle_skip(market, as_of)
+        if skip_reason is not None:
+            self._record_strategy_cycle_log(
+                level="INFO" if skip_reason == "market_closed" else "WARNING",
+                message="auto-trading cycle skipped",
+                created_at=as_of,
+                extra={
+                    "market": market,
+                    "reason": skip_reason,
+                    "source_env": self.settings.env.value,
+                    **skip_details,
+                },
+            )
+            return
+
+        try:
+            result = self.strategy_cycle_runner(market, as_of)
+        except Exception as exc:
+            self.state = replace(
+                self.state,
+                last_error=str(exc) or "auto_trading_cycle_failed",
+            )
+            self._record_strategy_cycle_log(
+                level="ERROR",
+                message="auto-trading cycle failed",
+                created_at=as_of,
+                extra={
+                    "market": market,
+                    "source_env": self.settings.env.value,
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc) or "auto_trading_cycle_failed",
+                },
+            )
+            return
+
+        self._record_strategy_cycle_log(
+            level="INFO",
+            message="auto-trading cycle completed",
+            created_at=as_of,
+            extra=self._build_strategy_cycle_result_extra(market, result),
+        )
+
+    def _evaluate_strategy_cycle_skip(self, market: str, as_of: datetime) -> tuple[str | None, dict[str, object]]:
+        if self.settings.env != RuntimeEnv.VTS:
+            return "non_vts_environment", {}
+
+        if not is_market_session_open(market, as_of):
+            return "market_closed", {}
+
+        from monitor.healthcheck import build_health_snapshot
+
+        health_snapshot = build_health_snapshot(
+            self,
+            now=as_of.astimezone(timezone.utc),
+        )
+        details = {
+            "health_status": health_snapshot.status.value,
+            "trading_blocked": health_snapshot.trading_blocked,
+            "writer_queue_degraded": health_snapshot.writer_queue_degraded,
+            "token_stale": health_snapshot.token_stale,
+            "poll_stale": health_snapshot.poll_stale,
+        }
+        if health_snapshot.writer_queue_degraded:
+            return "writer_queue_degraded", details
+        if health_snapshot.trading_blocked:
+            return "trading_blocked", details
+        if health_snapshot.token_stale:
+            return "token_stale", details
+        if health_snapshot.poll_stale:
+            return "polling_stale", details
+        return None, details
+
+    def _build_strategy_cycle_result_extra(self, market: str, result: object) -> dict[str, object]:
+        extra: dict[str, object] = {
+            "market": market,
+            "source_env": self.settings.env.value,
+        }
+        scalar_fields = {
+            "signals_generated": getattr(result, "signals_generated", None),
+            "signals_resolved": getattr(result, "signals_resolved", None),
+            "orders_submitted": getattr(result, "orders_submitted", None),
+        }
+        for key, value in scalar_fields.items():
+            if isinstance(value, int):
+                extra[key] = value
+
+        order_candidates = getattr(result, "order_candidates", None)
+        if isinstance(order_candidates, list):
+            extra["order_candidate_count"] = len(order_candidates)
+        rejected_signals = getattr(result, "rejected_signals", None)
+        if isinstance(rejected_signals, list):
+            extra["rejected_signal_count"] = len(rejected_signals)
+
+        details = getattr(result, "details", None)
+        if isinstance(details, dict):
+            submitted_order_count = details.get("submitted_order_count")
+            if isinstance(submitted_order_count, int):
+                extra["submitted_order_count"] = submitted_order_count
+            submitted_notional = details.get("submitted_notional_krw")
+            if isinstance(submitted_notional, (int, float)):
+                extra["submitted_notional_krw"] = float(submitted_notional)
+        return extra
+
+    def _record_strategy_cycle_log(
+        self,
+        *,
+        level: str,
+        message: str,
+        created_at: datetime,
+        extra: dict[str, object],
+    ) -> None:
+        try:
+            self.operations_recorder.record_system_log(
+                level=level,
+                module=AUTO_TRADING_LOG_MODULE,
+                message=message,
+                extra=extra,
+                created_at=created_at,
+            )
+        except Exception:
+            return
+
+    def _notify_operational_event(
+        self,
+        event_type: str,
+        summary: str,
+        *,
+        severity: str = "warning",
+        detail_fields: dict[str, object] | None = None,
+    ) -> None:
+        if self.telegram_notifier is None:
+            return
+        try:
+            self.telegram_notifier.send_event(
+                event_type,
+                summary,
+                context={"source_env": self.settings.env.value, **(detail_fields or {})},
+                severity=severity,
+                source_env=self.settings.env.value,
+            )
+        except Exception:
+            return
+
+    def _activate_notification_key(self, key: str) -> bool:
+        if key in self._active_notification_keys:
+            return False
+        self._active_notification_keys.add(key)
+        return True
+
+    def _clear_notification_key(self, key: str) -> None:
+        self._active_notification_keys.discard(key)
+
+    def _notify_trading_blocked_if_needed(
+        self,
+        *,
+        previously_blocked: bool,
+        reason: str,
+        detail_fields: dict[str, object] | None = None,
+    ) -> None:
+        if self.state.trading_blocked and not previously_blocked and self._activate_notification_key("trading_blocked"):
+            self._notify_operational_event(
+                "trading_blocked",
+                "Trading blocked; new entries are suspended.",
+                severity="critical",
+                detail_fields={"reason": reason, **(detail_fields or {})},
+            )
+        if not self.state.trading_blocked:
+            self._clear_notification_key("trading_blocked")
 
     def _run_token_refresh_job(self) -> None:
         if self.token_manager is None:
             self._refresh_health_status()
             return
 
+        previous_blocked = self.state.trading_blocked
         last_error: str | None = None
         for _ in range(TOKEN_REFRESH_MAX_ATTEMPTS):
             try:
@@ -220,6 +420,7 @@ class TradingRuntime:
                     last_token_refresh_at=token.issued_at,
                     last_error=None,
                 )
+                self._clear_notification_key("trading_blocked")
                 self._refresh_health_status()
                 return
             except AuthenticationError as exc:
@@ -231,6 +432,17 @@ class TradingRuntime:
             self.state,
             trading_blocked=True,
             last_error=last_error or "token_refresh_failed",
+        )
+        self._notify_operational_event(
+            "token_refresh_failure",
+            "Token refresh failed; trading remains blocked until credentials recover.",
+            severity="critical",
+            detail_fields={"error": self.state.last_error or "token_refresh_failed"},
+        )
+        self._notify_trading_blocked_if_needed(
+            previously_blocked=previous_blocked,
+            reason="token_refresh_failure",
+            detail_fields={"error": self.state.last_error or "token_refresh_failed"},
         )
         self._refresh_health_status()
 
@@ -248,6 +460,7 @@ class TradingRuntime:
             self._refresh_health_status()
             return
 
+        previous_blocked = self.state.trading_blocked
         try:
             if self.order_manager is not None:
                 self.order_manager.start_scheduled_poll()
@@ -288,6 +501,23 @@ class TradingRuntime:
                     consecutive_poll_failures=0,
                     last_error="polling_mismatch_detected",
                 )
+                self._notify_operational_event(
+                    "polling_mismatch",
+                    "Broker polling detected a mismatch between broker and internal state.",
+                    severity="critical",
+                    detail_fields={
+                        "market": active_market,
+                        "mismatch_count": int(result.summary.get("mismatch_count", 0)),
+                    },
+                )
+                self._notify_trading_blocked_if_needed(
+                    previously_blocked=previous_blocked,
+                    reason="polling_mismatch",
+                    detail_fields={
+                        "market": active_market,
+                        "mismatch_count": int(result.summary.get("mismatch_count", 0)),
+                    },
+                )
             else:
                 self.state = replace(
                     self.state,
@@ -302,6 +532,15 @@ class TradingRuntime:
                 consecutive_poll_failures=failure_count,
                 trading_blocked=self.state.trading_blocked or failure_count >= 3,
                 last_error=str(exc) or "broker_poll_failed",
+            )
+            self._notify_trading_blocked_if_needed(
+                previously_blocked=previous_blocked,
+                reason="polling_failures",
+                detail_fields={
+                    "market": active_market,
+                    "consecutive_poll_failures": failure_count,
+                    "error": self.state.last_error or "broker_poll_failed",
+                },
             )
         self._refresh_health_status()
 
@@ -407,10 +646,23 @@ class TradingRuntime:
                     else (None if cancelled_count or not self.state.trading_blocked else self.state.last_error)
                 ),
             )
+            if missing_cancel_metadata:
+                self._notify_operational_event(
+                    "pre_close_cancel_failure",
+                    "Pre-close cancel skipped because required KR cancel metadata was missing.",
+                    severity="warning",
+                    detail_fields={"market": market, "missing_order_orgno_count": missing_cancel_metadata},
+                )
         except Exception as exc:
             self.state = replace(
                 self.state,
                 last_error=str(exc) or "pre_close_cancel_failed",
+            )
+            self._notify_operational_event(
+                "pre_close_cancel_failure",
+                "Pre-close cancel failed.",
+                severity="warning",
+                detail_fields={"market": market, "error": self.state.last_error or "pre_close_cancel_failed"},
             )
         self._refresh_health_status()
 
@@ -446,9 +698,20 @@ class TradingRuntime:
 
     def _refresh_health_status(self) -> None:
         queue_health = self.writer_queue.health()
+        was_writer_queue_degraded = self.state.writer_queue_degraded
         if queue_health.degraded:
             self.state = mark_writer_queue_degraded(self.state, queue_health.last_error)
+            if not was_writer_queue_degraded and self._activate_notification_key("writer_queue_degraded"):
+                self._notify_operational_event(
+                    "writer_queue_degraded",
+                    "Writer queue degraded; trading is blocked until write health recovers.",
+                    severity="critical",
+                    detail_fields={"error": queue_health.last_error or "writer_queue_degraded"},
+                )
             return
+        self._clear_notification_key("writer_queue_degraded")
+        if not self.state.trading_blocked:
+            self._clear_notification_key("trading_blocked")
 
         health_status = RuntimeHealthStatus.WARNING if self.state.trading_blocked else RuntimeHealthStatus.NORMAL
         self.state = replace(

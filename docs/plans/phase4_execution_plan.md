@@ -17,10 +17,13 @@
 - 성공 기준은 장중 스케줄러가 전략을 주기적으로 실행하고, 설정된 상한 안에서 주문 생성, 제출, 체결 반영, 운영 로그까지 한 경로로 재현되는 것이다.
 
 ## Current State
-- `main.py`는 현재 `TradingRuntime`만 기동한다.
+- `main.py`는 현재 `TradingRuntime`와 `AutoTrader` wiring을 함께 기동한다.
 - `execution/runtime.py`는 token refresh, broker polling, fill ingestion, reconciliation, pre-close cancel, healthcheck만 수행한다.
-- 전략 구현은 존재하지만 `strategy -> resolver -> risk -> sizing -> order submit`을 한 번에 연결하는 runtime 경로는 없다.
-- `StrategyDataProvider` protocol은 정의되어 있으나, runtime에서 바로 쓰는 KR 자동매매용 provider 구현은 별도 정리가 필요하다.
+- `strategy -> resolver -> risk -> sizing -> order submit` runtime 경로는 구현되었고, 현재 남은 범위는 live market smoke validation과 운영 조건 점검이다.
+- `StrategyDataProvider` protocol 기준 KR 자동매매용 provider와 live loader fallback이 구현되었으며, source 품질 검증은 장중 smoke 단계에서 확인한다.
+- `P4-01`부터 `P4-05B`까지 scheduler hook, provider, orchestration, submit integration, safeguard/logging, `main.py` wiring, blocker hardening은 준비되었다.
+- `P4-06` live smoke validation의 남은 리스크는 live market 조건과 실제 signal/sizing 결과다.
+- VTS soak 실행을 위해 `config/config.yaml`은 `auto_trading.enabled=true`, `monitor.telegram.enabled=true` 기준으로 정리하고, `scripts/start_auto_trading.ps1`, `scripts/stop_auto_trading.ps1`를 통해 `main.py` runtime을 백그라운드로 기동/종료할 수 있게 한다.
 
 ## Scope
 ### In Scope
@@ -106,9 +109,30 @@
   - `allow_exits=true`
 - `main.py`는 새 서비스를 wiring만 하고 실행 정책 판단은 runtime과 auto trader에서 처리한다.
 
+### 4.5. Main Wiring Before P4-06
+- `P4-06`에 들어가기 전에 `main.py` 기준 실제 auto-trading wiring을 먼저 구현한다.
+- 이 작업은 새 phase 확장이 아니라 `P4-06`의 선행 조건으로 취급한다.
+- 최소 범위:
+  - `AutoTrader` 인스턴스 생성
+  - `strategy_cycle_runner`를 `TradingRuntime`에 실제 주입
+  - KR 전용 `universe_loader` 연결
+  - KR 전용 `price_history_loader` 연결
+  - `OperationsRecorder` 재사용
+- 제약:
+  - `VTS only`
+  - `KR only`
+  - 신규 외부 서비스 도입 금지
+  - canonical universe source가 없으면 최소 고정 universe 또는 명시적 loader로 제한
+  - 데이터 부족 시 주문 제출 대신 skip/rejection으로 남긴다
+- 완료 기준:
+  - `main.py` 실행만으로 장중 scheduler가 실제 strategy cycle을 호출할 수 있다
+  - runner는 기존 `AutoTrader.execute_cycle(...)`를 사용한다
+  - `system_logs`에 skip/completed/failure가 남는다
+  - live broker write는 여전히 `VTS`에서만 허용된다
+
 ### 5. Safety Guards
 - 아래 중 하나라도 참이면 cycle을 skip한다.
-  - `env != vts` and explicit prod flag not set
+  - `env != vts`
   - `trading_blocked=True`
   - `writer_queue_degraded=True`
   - token invalid or stale
@@ -140,10 +164,12 @@
 | ID | Task | Status | Done Criteria |
 | --- | --- | --- | --- |
 | P4-01 | Auto-trading config + runtime wiring | done | enabled 상태에서 strategy cycle job이 runtime에 등록된다 |
-| P4-02 | KR StrategyDataProvider 구현 | todo | dual/trend 전략이 runtime에서 실행 가능한 입력을 받는다 |
-| P4-03 | AutoTrader orchestration 구현 | todo | dry orchestration 결과가 `AutoTradeCycleResult`로 반환된다 |
-| P4-04 | Order submission integration | todo | cycle 1회에서 실제 주문 제출까지 이어진다 |
-| P4-05 | Runtime safeguards + logging | todo | 위험 상태에서 주문 제출 없이 skip 이유가 기록된다 |
+| P4-02 | KR StrategyDataProvider 구현 | done | dual/trend 전략이 runtime에서 실행 가능한 입력을 받는다 |
+| P4-03 | AutoTrader orchestration 구현 | done | dry orchestration 결과가 `AutoTradeCycleResult`로 반환된다 |
+| P4-04 | Order submission integration | done | cycle 1회에서 실제 주문 제출까지 이어진다 |
+| P4-05 | Runtime safeguards + logging | done | 위험 상태에서 주문 제출 없이 skip 이유가 기록된다 |
+| P4-05A | main.py actual auto-trading wiring | done | `main.py` 실행만으로 KR VTS strategy cycle이 실제 `AutoTrader.execute_cycle(...)`까지 연결된다 |
+| P4-05B | P4-06 blocker hardening | done | broker cash fallback, cycle-scoped token reuse, price-context 보강으로 live cycle이 구조적 `data_unavailable` 없이 실행된다 |
 | P4-06 | VTS scheduled smoke validation | todo | 장중 1회 이상 자동 진입 또는 청산이 기존 체결/원장 경로로 반영된다 |
 
 ## Implementation Notes
@@ -152,6 +178,41 @@
   - `config/config.yaml`에 KR scheduled 기본 계약과 안전한 기본값(`enabled=false`)을 추가했다.
   - `execution/runtime.py`에 `strategy_cycle_kr` job 등록과 `strategy_cycle_runner` hook을 추가했다.
   - 실제 전략 실행, data provider, order submit 연결은 아직 하지 않았고 이후 `P4-02`, `P4-03`, `P4-04`로 분리한다.
+- `P4-02` 완료
+  - `strategy.data_provider.KRStrategyDataProvider`를 추가했다.
+  - `event_calendar`를 읽어 KR용 `EventFlag`를 생성하고, 가격 이력은 주입 가능한 loader에서 읽도록 구현했다.
+  - 현재 저장소에 collector/adjusted_price/event_calendar 모듈 기반의 영속 가격 read path가 없어서, 가격 입력은 pluggable loader로 두고 상위 orchestration이 빈 결과를 `data_unavailable`로 처리하도록 남긴다.
+- `P4-03` 완료
+  - `execution.auto_trader.AutoTrader`를 추가했다.
+  - `universe_loader` 주입형 contract로 `generate_signals -> resolver -> risk -> sizing` dry cycle을 구성했다.
+  - 현재 저장소에 canonical universe source가 없어서, universe는 orchestration 입력으로 주입받도록 두고 실제 source 연결은 `P4-04` 이후로 남긴다.
+  - 이 단계는 DB write 없이 `AutoTradeCycleResult`, `ResolvedOrderCandidate`, rejection 목록만 반환한다.
+- `P4-04` 완료
+  - `AutoTrader.execute_cycle(...)`를 추가해 `persist_signal -> create_order_intent -> persist_validated_order -> place_order` 경로를 연결했다.
+  - cycle order/notional limit을 submit 직전 단계에서 강제하고, 제출 실패는 rejection 목록에 반영하도록 구현했다.
+  - 현재 저장소에 runtime/main에서 사용할 canonical universe source가 없어서, 실제 scheduled runtime wiring은 여전히 injected runner와 universe loader에 의존한다.
+- `P4-05` 완료
+  - `execution.runtime`에 auto-trading cycle guard를 추가해 `market_closed`, `trading_blocked`, `writer_queue_degraded`, `token_stale`, `polling_stale`, `non_vts_environment` 조건에서 runner 호출을 건너뛰도록 했다.
+  - skip/completed/failed 결과는 `monitor.operations.OperationsRecorder`를 통해 `system_logs`에 best-effort로 기록하도록 정리했다.
+  - 계획 문서 초안에는 `explicit prod flag`가 있었지만 현재 설정 모델에는 아직 없어서, 이번 단계는 최소 안전 해법으로 `env != vts`이면 auto-trading cycle을 hard skip하도록 고정했다.
+- `P4-05A` 완료
+  - `data/collector.py`를 추가해 보수적 KR 기본 universe loader와 `pykrx` best-effort price history loader를 제공하도록 정리했다.
+  - `main.py`는 이제 `AutoTrader`, `KRStrategyDataProvider`, `OperationsRecorder`를 조립하고 `strategy_cycle_runner`를 `TradingRuntime`에 실제 주입한다.
+  - 현재 canonical universe source는 여전히 없으므로, wiring 단계에서는 기존 KR 보유 종목과 보수적 KR 기본 universe를 합친 loader를 사용한다.
+  - `pykrx` price history가 불가한 환경에서는 빈 history를 반환하고, 상위 orchestration은 기존 계약대로 `data_unavailable` rejection/skip으로 처리한다.
+- `P4-06` blocker 보강
+  - `execution.kis_api`에 KR 일봉 조회와 정규화 표면을 추가했다.
+  - `data.collector`는 `pykrx -> KIS` composite KR price history loader를 제공하도록 보강했다.
+  - `execution.auto_trader`는 최신 `portfolio_snapshot`이 없을 때 optional broker cash loader를 사용해 `cash_available`을 보강하도록 정리했다.
+  - `main.py`의 live runner는 KR 현금 조회를 `cash_available_loader`로 연결해, 빈 `portfolio_snapshots` 상태에서도 entry sizing이 가능하도록 했다.
+- `P4-05B` 완료
+  - `main.py`는 같은 strategy cycle 안에서 확보한 access token을 KR broker cash 조회, KR KIS 일봉 조회, 주문 제출 경로가 재사용하도록 보강했다.
+  - `execution.auto_trader`는 전략 실행 후 `latest_prices`를 계산하도록 순서를 조정해, 같은 cycle에서 이미 읽은 KR price history를 price context에 재사용하도록 정리했다.
+  - live read-only validation 기준으로 `cash_available`는 broker cash로 채워지고, 구조적 `latest_price_missing` blocker는 해소되었다. 남은 no-op 가능성은 현재 시점 전략 signal이 sizing 단계에서 걸리는 경우다.
+- VTS soak runbook 보강
+  - `main.py`는 `TelegramNotifier`를 runtime에 주입해 기존 운영 이벤트(`token_refresh_failure`, `polling_mismatch`, `trading_blocked`, `writer_queue_degraded`, `pre_close_cancel_failure`)를 실제 텔레그램 송신 경로로 연결한다.
+  - `scripts/start_auto_trading.ps1`는 `env=vts`, `auto_trading.enabled=true`를 확인한 뒤 `main.py`를 백그라운드로 실행하고 PID/로그 파일을 남긴다.
+  - `scripts/stop_auto_trading.ps1`는 PID 파일과 command line을 확인한 뒤 동일 runtime만 안전하게 종료한다.
 
 ## Test Plan
 - 단위 테스트
@@ -194,14 +255,10 @@ python -m compileall core execution strategy risk tests main.py
   - task status, verification scope, implementation notes 갱신
 
 ## Recommended Start Order
-1. `P4-02 KR StrategyDataProvider 구현`
-2. `P4-03 AutoTrader orchestration 구현`
-3. `P4-04 Order submission integration`
-4. `P4-05 Runtime safeguards + logging`
-5. `P4-06 VTS scheduled smoke validation`
+1. `P4-06 VTS scheduled smoke validation`
 
 ## First Recommended Task
-- `P4-02 KR StrategyDataProvider 구현`
+- `P4-06 VTS scheduled smoke validation`
 - 이유:
-  - `P4-01`에서 scheduler job과 설정 계약이 고정됐으므로, 다음은 전략이 실제로 consume할 KR 가격/event read path를 먼저 닫아야 한다.
-  - provider가 먼저 있어야 `P4-03` orchestration이 mock이 아니라 실제 입력 계약 위에서 구현된다.
+  - `P4-05A`까지로 실제 기동 경로 wiring이 닫혔으므로, 다음 남은 핵심 검증은 장중 VTS에서 scheduler 기반 cycle이 주문 제출과 기존 체결/원장 경로로 이어지는지 확인하는 것이다.
+  - 현재 불확실성은 구현보다 live market 조건과 broker 응답이므로, 다음 단계는 운영 검증이 우선이다.

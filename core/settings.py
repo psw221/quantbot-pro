@@ -170,11 +170,55 @@ class StrategySettings(BaseModel):
     event_filter_enabled: bool = True
 
 
+class AutoTradingMarketSettings(BaseModel):
+    schedule_cron: str = "*/15 9-15 * * 1-5"
+
+    @model_validator(mode="after")
+    def validate_schedule_cron(self) -> "AutoTradingMarketSettings":
+        if len(self.schedule_cron.split()) != 5:
+            raise ConfigurationError("auto_trading market schedule_cron must use standard 5-field cron syntax")
+        return self
+
+
+class AutoTradingSettings(BaseModel):
+    enabled: bool = False
+    markets: list[str] = Field(default_factory=lambda: ["KR"])
+    strategies: list[str] = Field(default_factory=lambda: ["dual_momentum", "trend_following"])
+    max_orders_per_cycle: int = 1
+    max_order_notional_per_cycle: float = 500000.0
+    allow_new_entries: bool = True
+    allow_exits: bool = True
+    kr: AutoTradingMarketSettings = Field(default_factory=AutoTradingMarketSettings)
+
+    @model_validator(mode="after")
+    def validate_supported_scope(self) -> "AutoTradingSettings":
+        if not self.markets:
+            raise ConfigurationError("auto_trading.markets must not be empty")
+        if len(set(self.markets)) != len(self.markets):
+            raise ConfigurationError("auto_trading.markets must not contain duplicates")
+        if set(self.markets) != {"KR"}:
+            raise ConfigurationError("Phase 4 initial auto_trading scope supports KR only")
+        if not self.strategies:
+            raise ConfigurationError("auto_trading.strategies must not be empty")
+        if len(set(self.strategies)) != len(self.strategies):
+            raise ConfigurationError("auto_trading.strategies must not contain duplicates")
+        if set(self.strategies) - {"dual_momentum", "trend_following"}:
+            raise ConfigurationError(
+                "Phase 4 initial auto_trading scope supports only dual_momentum and trend_following"
+            )
+        if self.max_orders_per_cycle < 1:
+            raise ConfigurationError("auto_trading.max_orders_per_cycle must be at least 1")
+        if self.max_order_notional_per_cycle <= 0:
+            raise ConfigurationError("auto_trading.max_order_notional_per_cycle must be positive")
+        return self
+
+
 class Settings(BaseModel):
     env: RuntimeEnv = RuntimeEnv.VTS
     allocation: AllocationSettings = Field(default_factory=AllocationSettings)
     strategy_weights: StrategyWeightsSettings = Field(default_factory=StrategyWeightsSettings)
     strategies: StrategySettings = Field(default_factory=StrategySettings)
+    auto_trading: AutoTradingSettings = Field(default_factory=AutoTradingSettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
     monitor: MonitorSettings = Field(default_factory=MonitorSettings)

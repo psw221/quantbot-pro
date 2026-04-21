@@ -35,6 +35,17 @@ strategies:
     momentum_weight: 0.25
     low_vol_weight: 0.25
 
+auto_trading:
+  enabled: true
+  markets: [KR]
+  strategies: [dual_momentum, trend_following]
+  max_orders_per_cycle: 1
+  max_order_notional_per_cycle: 500000
+  allow_new_entries: true
+  allow_exits: true
+  kr:
+    schedule_cron: "*/15 9-15 * * 1-5"
+
 database:
   path: data/quantbot.db
   busy_timeout_ms: 5000
@@ -45,7 +56,7 @@ logging:
 
 monitor:
   telegram:
-    enabled: false
+    enabled: true
     bot_token_env: TELEGRAM_BOT_TOKEN
     chat_id_env: TELEGRAM_CHAT_ID
     request_timeout_sec: 5
