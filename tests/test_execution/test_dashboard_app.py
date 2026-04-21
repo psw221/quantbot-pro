@@ -5,7 +5,8 @@ from datetime import datetime, timezone
 from core.models import RuntimeHealthStatus
 from monitor.dashboard import DashboardSnapshot
 from monitor.healthcheck import HealthSnapshot
-from monitor.dashboard_app import build_auto_trading_diagnostics, render_dashboard
+from monitor.dashboard_app import build_auto_trading_diagnostics, build_strategy_budget_summary, render_dashboard
+from tests.test_execution.test_bootstrap import build_settings
 
 
 class FakeStreamlit:
@@ -54,7 +55,8 @@ class FakeColumn:
         )
 
 
-def test_render_dashboard_outputs_layer5_skeleton_sections() -> None:
+def test_render_dashboard_outputs_layer5_skeleton_sections(tmp_path) -> None:
+    settings = build_settings(tmp_path)
     snapshot = DashboardSnapshot(
         generated_at=datetime(2026, 4, 21, 13, 30, tzinfo=timezone.utc),
         health=HealthSnapshot(
@@ -88,7 +90,10 @@ def test_render_dashboard_outputs_layer5_skeleton_sections() -> None:
                 "executed_at": datetime(2026, 4, 21, 12, 45, tzinfo=timezone.utc),
             }
         ],
-        latest_portfolio_snapshot=None,
+        latest_portfolio_snapshot={
+            "snapshot_date": datetime(2026, 4, 21, 13, 0, tzinfo=timezone.utc),
+            "cash_krw": 8_651_886.0,
+        },
         reconciliation_summary={
             "run_count": 2,
             "warning_count": 0,
@@ -133,12 +138,13 @@ def test_render_dashboard_outputs_layer5_skeleton_sections() -> None:
     )
     fake_st = FakeStreamlit()
 
-    render_dashboard(snapshot, st_module=fake_st)
+    render_dashboard(snapshot, st_module=fake_st, settings=settings)
 
     headers = [value for kind, value in fake_st.calls if kind == "subheader"]
     assert headers == [
         "Operations Summary",
         "Auto-Trading Diagnostics",
+        "Strategy Budget",
         "Health",
         "Open Orders",
         "Recent Trades",
@@ -146,11 +152,12 @@ def test_render_dashboard_outputs_layer5_skeleton_sections() -> None:
         "Recent Logs",
     ]
     metrics = [value for kind, value in fake_st.calls if kind == "metric"]
-    assert len(metrics) == 16
+    assert len(metrics) == 22
     assert any(metric["label"] == "Trading Blocked" and metric["value"] == "No" for metric in metrics)
     assert any(metric["label"] == "Poll Stale" and metric["value"] == "Yes" for metric in metrics)
     assert any(metric["label"] == "Latest Backtest" and metric["value"] == "trend_following (KR)" for metric in metrics)
     assert any(metric["label"] == "Top Rejections" and metric["value"] == "existing_position_reentry_blocked:1,no_position_to_sell:1" for metric in metrics)
+    assert any(metric["label"] == "Single-Stock Cap" and metric["value"] == "432,594 KRW" for metric in metrics)
     assert any(kind == "dataframe" for kind, _ in fake_st.calls)
     assert any(kind == "json" for kind, _ in fake_st.calls)
 
@@ -201,3 +208,49 @@ def test_build_auto_trading_diagnostics_returns_latest_cycle_summary() -> None:
     assert diagnostics["cycle_status"] == "skipped"
     assert diagnostics["reason"] == "trading_blocked"
     assert diagnostics["orders_submitted"] == "n/a"
+
+
+def test_build_strategy_budget_summary_uses_latest_snapshot_cash(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    snapshot = DashboardSnapshot(
+        generated_at=datetime(2026, 4, 21, 14, 0, tzinfo=timezone.utc),
+        health=HealthSnapshot(
+            status=RuntimeHealthStatus.NORMAL,
+            trading_blocked=False,
+            scheduler_running=False,
+            writer_queue_running=False,
+            writer_queue_degraded=False,
+            queue_depth=0,
+            token_stale=False,
+            poll_stale=False,
+            last_token_refresh_at=None,
+            last_poll_success_at=None,
+            consecutive_poll_failures=0,
+            last_error=None,
+            details={"status_source": "external_canonical"},
+        ),
+        open_orders=[],
+        recent_trades=[],
+        latest_portfolio_snapshot={
+            "snapshot_date": datetime(2026, 4, 21, 13, 0, tzinfo=timezone.utc),
+            "cash_krw": 8_651_886.0,
+        },
+        reconciliation_summary={},
+        recent_manual_restores=[],
+        recent_backtests=[],
+        operational_summary={},
+        recent_logs=[],
+    )
+
+    summary = build_strategy_budget_summary(snapshot, settings=settings)
+
+    assert summary["snapshot_available"] is True
+    assert summary["cash_available_krw"] == 8_651_886.0
+    assert summary["gross_budget_krw"] == 7_786_697.4
+    assert summary["kr_market_budget_krw"] == 4_672_018.44
+    assert summary["single_stock_cap_krw"] == 432_594.3
+    assert summary["cycle_notional_cap_krw"] == 500_000.0
+    rows = {row["strategy"]: row for row in summary["strategy_rows"]}
+    assert rows["dual_momentum"]["target_notional_krw"] == 1_401_605.53
+    assert rows["dual_momentum"]["candidate_cap_krw"] == 432_594.3
+    assert rows["factor_investing"]["active_in_auto_trading"] is False

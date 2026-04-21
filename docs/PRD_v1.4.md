@@ -486,6 +486,7 @@ Phase 2 기준 canonical 상태는 아래와 같습니다.
   - 현재 저장소 기준 Streamlit dashboard skeleton은 아래 기본 섹션을 이미 제공합니다.
     - health
     - auto-trading diagnostics
+    - strategy budget
     - open orders
     - recent trades
     - reconciliation summary

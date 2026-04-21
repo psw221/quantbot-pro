@@ -3,15 +3,17 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from core.settings import get_settings
+from core.settings import Settings, get_settings
 from monitor.dashboard import DashboardSnapshot, build_read_only_dashboard_snapshot
 
 
-def render_dashboard(snapshot: DashboardSnapshot, *, st_module: Any) -> None:
+def render_dashboard(snapshot: DashboardSnapshot, *, st_module: Any, settings: Settings | None = None) -> None:
+    resolved_settings = settings or get_settings()
     st_module.title("QuantBot Pro Dashboard")
     st_module.caption(f"generated_at={_format_value(snapshot.generated_at)}")
     render_operations_summary_panel(snapshot, st_module=st_module)
     render_auto_trading_diagnostics_panel(snapshot, st_module=st_module)
+    render_strategy_budget_panel(snapshot, st_module=st_module, settings=resolved_settings)
 
     st_module.subheader("Health")
     st_module.json(
@@ -128,6 +130,65 @@ def build_auto_trading_diagnostics(snapshot: DashboardSnapshot) -> dict[str, Any
     return None
 
 
+def render_strategy_budget_panel(snapshot: DashboardSnapshot, *, st_module: Any, settings: Settings) -> None:
+    st_module.subheader("Strategy Budget")
+    summary = build_strategy_budget_summary(snapshot, settings=settings)
+
+    cards = [
+        ("Cash KRW", _format_currency(summary["cash_available_krw"])),
+        ("Gross Budget", _format_currency(summary["gross_budget_krw"])),
+        ("KR Budget", _format_currency(summary["kr_market_budget_krw"])),
+        ("Single-Stock Cap", _format_currency(summary["single_stock_cap_krw"])),
+        ("Cycle Cap", _format_currency(summary["cycle_notional_cap_krw"])),
+        ("Active Strategies", summary["active_strategy_labels"]),
+    ]
+    columns = st_module.columns(3)
+    for index, (label, value) in enumerate(cards):
+        columns[index % len(columns)].metric(label=label, value=value)
+
+    if not summary["snapshot_available"]:
+        st_module.info("No latest portfolio snapshot available; strategy budget uses 0 KRW cash until snapshot data exists.")
+
+    st_module.dataframe(_normalize_rows(summary["strategy_rows"]), use_container_width=True)
+
+
+def build_strategy_budget_summary(snapshot: DashboardSnapshot, *, settings: Settings) -> dict[str, Any]:
+    latest_snapshot = snapshot.latest_portfolio_snapshot or {}
+    cash_available = float(latest_snapshot.get("cash_krw") or 0.0)
+    gross_budget = cash_available * (1 - settings.allocation.cash_buffer)
+    kr_market_budget = gross_budget * settings.allocation.domestic
+    single_stock_cap = cash_available * settings.risk.max_single_stock_domestic
+    cycle_notional_cap = float(settings.auto_trading.max_order_notional_per_cycle)
+    strategy_weights = settings.strategy_weights.model_dump()
+    active_strategies = set(settings.auto_trading.strategies)
+
+    strategy_rows: list[dict[str, Any]] = []
+    for strategy_name, weight in strategy_weights.items():
+        target_notional = kr_market_budget * float(weight)
+        candidate_cap = min(target_notional, single_stock_cap)
+        strategy_rows.append(
+            {
+                "strategy": strategy_name,
+                "active_in_auto_trading": strategy_name in active_strategies,
+                "strategy_weight_pct": round(float(weight) * 100, 2),
+                "target_notional_krw": round(target_notional, 2),
+                "candidate_cap_krw": round(candidate_cap, 2),
+            }
+        )
+
+    return {
+        "snapshot_available": snapshot.latest_portfolio_snapshot is not None,
+        "snapshot_date": None if snapshot.latest_portfolio_snapshot is None else snapshot.latest_portfolio_snapshot.get("snapshot_date"),
+        "cash_available_krw": round(cash_available, 2),
+        "gross_budget_krw": round(gross_budget, 2),
+        "kr_market_budget_krw": round(kr_market_budget, 2),
+        "single_stock_cap_krw": round(single_stock_cap, 2),
+        "cycle_notional_cap_krw": round(cycle_notional_cap, 2),
+        "active_strategy_labels": ", ".join(settings.auto_trading.strategies),
+        "strategy_rows": strategy_rows,
+    }
+
+
 def _render_rows(st_module: Any, *, rows: list[dict[str, Any]], empty_message: str) -> None:
     if not rows:
         st_module.info(empty_message)
@@ -180,13 +241,17 @@ def _format_metric_value(value: Any) -> str:
     return str(value)
 
 
+def _format_currency(value: float) -> str:
+    return f"{value:,.0f} KRW"
+
+
 def main() -> None:
     import streamlit as st
 
     settings = get_settings()
     st.set_page_config(page_title="QuantBot Pro Dashboard", layout="wide")
     snapshot = build_read_only_dashboard_snapshot(env=settings.env)
-    render_dashboard(snapshot, st_module=st)
+    render_dashboard(snapshot, st_module=st, settings=settings)
 
 
 if __name__ == "__main__":
