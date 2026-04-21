@@ -571,6 +571,7 @@ Phase 3 운영 기준:
   - sell: `settlement_fx_rate -> trade_fx_rate`
   - buy: `buy_settlement_fx_rate -> buy_trade_fx_rate`
 - Phase 3의 세금 기능은 추산 및 리포트까지로 제한하며, 신고 자동화는 범위 밖으로 둡니다.
+- 현재 저장소 기준 연간 세금 추산은 yearly summary / trade-level report를 JSON 또는 CSV로 export할 수 있습니다.
 
 ### 6.6 장애 복구 (DR)
 
