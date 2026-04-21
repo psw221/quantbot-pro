@@ -21,6 +21,35 @@ from execution.writer_queue import WriterQueue
 from tests.test_execution.test_bootstrap import build_settings
 
 
+class RecordingTelegramNotifier:
+    def __init__(self) -> None:
+        self.events: list[dict[str, object]] = []
+
+    def send_event(
+        self,
+        event_type,
+        message,
+        context=None,
+        *,
+        severity="warning",
+        title=None,
+        created_at=None,
+        source_env=None,
+    ):
+        self.events.append(
+            {
+                "event_type": event_type,
+                "message": message,
+                "context": dict(context or {}),
+                "severity": severity,
+                "title": title,
+                "created_at": created_at,
+                "source_env": source_env,
+            }
+        )
+        return None
+
+
 def test_order_manager_creates_validated_order(tmp_path) -> None:
     settings = build_settings(tmp_path)
     init_db(settings)
@@ -255,7 +284,13 @@ def test_order_manager_moves_order_to_reconcile_hold_on_reconciliation_failure(t
     init_db(settings)
     writer_queue = WriterQueue()
     writer_queue.start()
-    manager = OrderManager(writer_queue=writer_queue, api_client=ReconcileFailClient(), settings=settings)
+    notifier = RecordingTelegramNotifier()
+    manager = OrderManager(
+        writer_queue=writer_queue,
+        api_client=ReconcileFailClient(),
+        telegram_notifier=notifier,
+        settings=settings,
+    )
 
     try:
         signal = Signal(ticker="AAPL", market="US", action="buy", strategy="dual_momentum", strength=1.0, reason="entry")
@@ -273,6 +308,29 @@ def test_order_manager_moves_order_to_reconcile_hold_on_reconciliation_failure(t
     assert order.status == OrderStatus.RECONCILE_HOLD.value
     assert order.error_code == "RECONCILIATION_REQUIRED"
     assert manager.trading_blocked is True
+    assert [event["event_type"] for event in notifier.events] == ["reconcile_hold"]
+    assert notifier.events[0]["context"]["ticker"] == "AAPL"
+    assert notifier.events[0]["context"]["reason"] == "reconcile_hold"
+
+
+def test_order_manager_sends_reconcile_hold_notification_only_on_first_transition(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    init_db(settings)
+    writer_queue = WriterQueue()
+    writer_queue.start()
+    notifier = RecordingTelegramNotifier()
+    manager = OrderManager(writer_queue=writer_queue, telegram_notifier=notifier, settings=settings)
+
+    try:
+        manager.flag_reconciliation_hold("005930", summary={"mismatch_count": 2, "reason": "polling_mismatch"})
+        manager.flag_reconciliation_hold("005930", summary={"mismatch_count": 3, "reason": "polling_mismatch"})
+    finally:
+        writer_queue.stop()
+
+    assert [event["event_type"] for event in notifier.events] == ["reconcile_hold"]
+    assert notifier.events[0]["severity"] == "critical"
+    assert notifier.events[0]["context"]["ticker"] == "005930"
+    assert notifier.events[0]["context"]["mismatch_count"] == 2
 
 
 def test_order_manager_classifies_retryable_normalized_failure(tmp_path) -> None:

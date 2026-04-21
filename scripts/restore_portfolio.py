@@ -341,7 +341,12 @@ def main() -> None:
     writer_queue.start()
     try:
         snapshot = load_snapshot_file(Path(args.snapshot_file))
-        order_manager = OrderManager(writer_queue=writer_queue, settings=settings)
+        telegram_notifier = TelegramNotifier(settings=settings)
+        order_manager = OrderManager(
+            writer_queue=writer_queue,
+            telegram_notifier=telegram_notifier,
+            settings=settings,
+        )
         if args.apply:
             order_manager.trading_blocked = True
         service = RestorePortfolioService(
@@ -349,7 +354,7 @@ def main() -> None:
             reconciliation_service=ReconciliationService(writer_queue=writer_queue, settings=settings),
             order_manager=order_manager,
             operations_recorder=OperationsRecorder(writer_queue),
-            telegram_notifier=TelegramNotifier(settings=settings),
+            telegram_notifier=telegram_notifier,
             settings=settings,
         )
         summary = service.restore(snapshot, market=args.market, apply=args.apply)

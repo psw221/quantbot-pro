@@ -22,6 +22,7 @@ from core.exceptions import AuthenticationError, BrokerApiError, ReconciliationE
 from data.database import Order, ReconciliationRun, Signal as SignalRow, get_read_session, utc_now
 from execution.kis_api import KISApiClient
 from execution.writer_queue import WriterQueue
+from monitor.telegram_bot import TelegramNotifier
 
 
 @dataclass(slots=True)
@@ -37,11 +38,13 @@ class OrderManager:
         self,
         writer_queue: WriterQueue,
         api_client: KISApiClient | None = None,
+        telegram_notifier: TelegramNotifier | None = None,
         settings: Settings | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.writer_queue = writer_queue
         self.api_client = api_client
+        self.telegram_notifier = telegram_notifier
         self.reconciliation_status = ReconciliationStatus.IDLE
         self.trading_blocked = False
         self.max_submit_retries = 3
@@ -232,13 +235,17 @@ class OrderManager:
         self.reconciliation_status = ReconciliationStatus.SCHEDULED_POLLING
 
     def flag_reconciliation_hold(self, ticker: str | None, summary: dict | None = None) -> None:
+        transitioned = self.reconciliation_status != ReconciliationStatus.MISMATCH_DETECTED or not self.trading_blocked
         self.trading_blocked = True
         self.reconciliation_status = ReconciliationStatus.MISMATCH_DETECTED
+        safe_summary = dict(summary or {})
         future = self.writer_queue.submit(
-            lambda session: self._record_reconciliation_hold(session, ticker, summary or {}),
+            lambda session: self._record_reconciliation_hold(session, ticker, safe_summary),
             description="record reconciliation hold",
         )
         future.result()
+        if transitioned:
+            self._send_reconcile_hold_notification(ticker, safe_summary)
 
     @staticmethod
     def classify_submit_result(result: BrokerOrderResult) -> SubmitFailureDecision:
@@ -338,6 +345,29 @@ class OrderManager:
                 return self.max_submit_retries
             remaining = self.max_submit_retries - int(order.retry_count or 0)
         return max(0, remaining)
+
+    def _send_reconcile_hold_notification(self, ticker: str | None, summary: dict) -> None:
+        if self.telegram_notifier is None:
+            return
+        context: dict[str, object] = {
+            "run_type": "scheduled_poll",
+            "reason": str(summary.get("reason", "reconcile_hold")),
+            "mismatch_count": int(summary.get("mismatch_count", 1) or 1),
+        }
+        if ticker is not None:
+            context["ticker"] = ticker
+        if "order_id" in summary:
+            context["order_id"] = summary["order_id"]
+        try:
+            self.telegram_notifier.send_event(
+                "reconcile_hold",
+                "reconciliation hold triggered",
+                context=context,
+                severity="critical",
+                source_env=self.settings.env.value,
+            )
+        except Exception:
+            return
 
     @staticmethod
     def _insert_signal(session, signal: Signal) -> int:

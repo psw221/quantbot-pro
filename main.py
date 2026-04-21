@@ -84,10 +84,16 @@ def main() -> None:
     order_manager = None
     reconciliation_service = None
     operations_recorder = OperationsRecorder(writer_queue)
+    telegram_notifier = TelegramNotifier(settings=settings)
     if settings.kis.credentials is not None:
         api_client = KISApiClient(settings=settings)
         token_manager = TokenManager(writer_queue=writer_queue, api_client=api_client, settings=settings)
-        order_manager = OrderManager(writer_queue=writer_queue, api_client=api_client, settings=settings)
+        order_manager = OrderManager(
+            writer_queue=writer_queue,
+            api_client=api_client,
+            telegram_notifier=telegram_notifier,
+            settings=settings,
+        )
         reconciliation_service = ReconciliationService(writer_queue=writer_queue, settings=settings)
 
     runtime = TradingRuntime(
@@ -97,7 +103,7 @@ def main() -> None:
         order_manager=order_manager,
         reconciliation_service=reconciliation_service,
         operations_recorder=operations_recorder,
-        telegram_notifier=TelegramNotifier(settings=settings),
+        telegram_notifier=telegram_notifier,
         settings=settings,
         strategy_cycle_runner=build_strategy_cycle_runner(
             settings=settings,

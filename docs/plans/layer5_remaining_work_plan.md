@@ -16,7 +16,7 @@ Layer 5 모니터링 및 DR 잔여 작업 계획
 
 ## Current State
 - `monitor/dashboard.py`는 Streamlit UI가 아니라 read-only snapshot builder다.
-- `monitor/telegram_bot.py`는 notifier 구현이 완료되었고 runtime 이벤트 일부가 실제로 연결돼 있다.
+- `monitor/telegram_bot.py`는 notifier 구현이 완료되었고 runtime, restore, reconcile hold 이벤트 일부가 실제로 연결돼 있다.
 - `monitor/healthcheck.py`는 external canonical health(`normal`, `warning`, `critical`)를 제공한다.
 - `tax/tax_calculator.py`는 `calculate_yearly_summary()`와 `build_trade_report()`를 제공하지만 출력물 생성/배포 계층은 없다.
 - `scripts/restore_portfolio.py`는 `dry-run`/`apply`, `manual_restore`, reconciliation 기록까지 구현됐지만 DR 관련 Telegram 자동 연계는 없다.
@@ -35,7 +35,7 @@ Layer 5 모니터링 및 DR 잔여 작업 계획
 | L5-07 | Tax Dashboard Summary | done | tax summary 핵심 숫자를 dashboard에서 볼 수 있다 |
 | L5-08 | Monthly/Periodic Report Shape | todo | 월간 세후 성과 리포트의 최소 출력 포맷이 고정된다 |
 | L5-09 | DR Telegram Integration | done | `restore_portfolio.py`가 `dr_restore_started/completed/failed`를 apply 흐름에서 자동 발송한다 |
-| L5-10 | Reconcile Hold Notification | todo | `reconcile_hold` 상태 전환 시 telegram 자동 발송이 연결된다 |
+| L5-10 | Reconcile Hold Notification | done | `reconcile_hold` 상태 전환 시 telegram 자동 발송이 연결된다 |
 | L5-11 | FX Alert Wiring Or Defer | todo | `fx_alert` 자동 호출을 구현하거나 deferred로 문서화한다 |
 | L5-12 | Dashboard Snapshot Enrichment | todo | strategy budget / tax summary / auto-trading diagnostics가 snapshot에 포함된다 |
 | L5-13 | Runbook/Usage Docs | todo | dashboard 실행, tax export, restore/telegram 해석 방법이 문서화된다 |
@@ -50,7 +50,7 @@ Layer 5 모니터링 및 DR 잔여 작업 계획
 - `L5-07`은 `TaxCalculator.calculate_yearly_summary()`를 재사용해 dashboard에서 연간 세후 summary 카드와 by-market 표를 렌더링한다.
 - `L5-08`은 `tax/tax_calculator.py`를 계산 엔진으로 유지하고, periodic output 계층만 추가한다.
 - `L5-09`는 `restore_portfolio.py`의 apply 흐름에 `dr_restore_started/completed/failed`를 best-effort로 연결하고, `dry-run`은 no-write/no-notify 계약을 유지한다.
-- `L5-10`은 notifier 자체를 바꾸지 않고 call-site만 연결한다.
+- `L5-10`은 `OrderManager.flag_reconciliation_hold()`에 `reconcile_hold`를 연결하고, 이미 hold 상태면 중복 발송하지 않는다.
 - `L5-11`은 이번 계획에서 기본적으로 deferred를 추천한다. 현재 `fx_alert`는 notifier 표면만 있고 자동 호출 정책이 없다.
 - `L5-12`는 dashboard가 별도 계산 없이 snapshot만 렌더링할 수 있도록 read-model을 확장하는 단계다.
 - `L5-13`은 운영자가 실행 절차를 문서만 보고 따라갈 수 있을 정도의 사용 문서를 목표로 한다.
@@ -84,13 +84,13 @@ python -m compileall monitor tax scripts tests main.py
 - restore telegram integration tests
 
 ## Recommended Start Order
-1. `L5-10 Reconcile Hold Notification`
-2. `L5-13 Runbook/Usage Docs`
-3. `L5-03 Restore/Backtest Panels`
+1. `L5-13 Runbook/Usage Docs`
+2. `L5-03 Restore/Backtest Panels`
+3. `L5-11 FX Alert Wiring Or Defer`
 
 ## First Recommended Task
-- `L5-10 Reconcile Hold Notification`
+- `L5-13 Runbook/Usage Docs`
 - 이유:
-  - restore apply는 이제 `dr_restore_started/completed/failed`를 telegram과 system log에 같은 이벤트명으로 남긴다.
-  - 다음은 reconciliation mismatch 복구 흐름의 시작점인 `reconcile_hold` 자동 알림을 연결해야 Layer 5 운영 알림 표면이 거의 닫힌다.
-  - 이후 runbook 문서와 restore/backtest 패널을 같은 운영 용어 체계로 정리하기 쉽다.
+  - restore와 reconcile hold 텔레그램 연계가 둘 다 닫혀서 Layer 5 운영 알림 표면은 거의 완성됐다.
+  - 다음은 dashboard 실행, tax export, restore/telegram 이벤트 해석 절차를 문서화해 운영자가 코드나 DB 없이 Layer 5 기능을 사용할 수 있게 만드는 순서가 가장 자연스럽다.
+  - 그 뒤에 restore/backtest UI 패널이나 `fx_alert` deferred 정리를 같은 용어 체계로 이어가기 쉽다.
