@@ -10,6 +10,7 @@ from monitor.dashboard import DashboardSnapshot, build_read_only_dashboard_snaps
 def render_dashboard(snapshot: DashboardSnapshot, *, st_module: Any) -> None:
     st_module.title("QuantBot Pro Dashboard")
     st_module.caption(f"generated_at={_format_value(snapshot.generated_at)}")
+    render_operations_summary_panel(snapshot, st_module=st_module)
 
     st_module.subheader("Health")
     st_module.json(
@@ -50,6 +51,25 @@ def render_dashboard(snapshot: DashboardSnapshot, *, st_module: Any) -> None:
     )
 
 
+def render_operations_summary_panel(snapshot: DashboardSnapshot, *, st_module: Any) -> None:
+    st_module.subheader("Operations Summary")
+    cards = [
+        ("Health", snapshot.operational_summary.get("health_status", "unknown")),
+        ("Trading Blocked", _format_bool(snapshot.operational_summary.get("trading_blocked"))),
+        ("Poll Stale", _format_bool(snapshot.operational_summary.get("poll_stale"))),
+        ("Writer Queue", _format_writer_queue(snapshot.operational_summary.get("writer_queue_degraded"))),
+        ("Recent Mismatch", _format_bool(snapshot.operational_summary.get("has_recent_mismatch"))),
+        ("Latest Reconciliation", snapshot.operational_summary.get("latest_reconciliation_status", "n/a")),
+        ("Latest Restore", snapshot.operational_summary.get("latest_manual_restore_status", "n/a")),
+        ("Latest Backtest", _format_backtest_summary(snapshot.operational_summary)),
+    ]
+
+    columns = st_module.columns(4)
+    for index, (label, value) in enumerate(cards):
+        column = columns[index % len(columns)]
+        column.metric(label=label, value=value)
+
+
 def _render_rows(st_module: Any, *, rows: list[dict[str, Any]], empty_message: str) -> None:
     if not rows:
         st_module.info(empty_message)
@@ -69,6 +89,24 @@ def _format_value(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.isoformat()
     return value
+
+
+def _format_bool(value: Any) -> str:
+    return "Yes" if bool(value) else "No"
+
+
+def _format_writer_queue(degraded: Any) -> str:
+    return "Degraded" if bool(degraded) else "Healthy"
+
+
+def _format_backtest_summary(summary: dict[str, Any]) -> str:
+    strategy = summary.get("latest_backtest_strategy")
+    market = summary.get("latest_backtest_market")
+    if not strategy:
+        return "n/a"
+    if not market:
+        return str(strategy)
+    return f"{strategy} ({market})"
 
 
 def main() -> None:

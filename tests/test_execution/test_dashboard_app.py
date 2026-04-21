@@ -30,6 +30,29 @@ class FakeStreamlit:
     def dataframe(self, value: object, **kwargs: object) -> None:
         self.calls.append(("dataframe", {"value": value, "kwargs": kwargs}))
 
+    def columns(self, count: int) -> list["FakeColumn"]:
+        self.calls.append(("columns", count))
+        return [FakeColumn(self.calls, index=i) for i in range(count)]
+
+
+class FakeColumn:
+    def __init__(self, calls: list[tuple[str, object]], *, index: int) -> None:
+        self._calls = calls
+        self._index = index
+
+    def metric(self, *, label: str, value: object, delta: object | None = None) -> None:
+        self._calls.append(
+            (
+                "metric",
+                {
+                    "column_index": self._index,
+                    "label": label,
+                    "value": value,
+                    "delta": delta,
+                },
+            )
+        )
+
 
 def test_render_dashboard_outputs_layer5_skeleton_sections() -> None:
     snapshot = DashboardSnapshot(
@@ -77,7 +100,17 @@ def test_render_dashboard_outputs_layer5_skeleton_sections() -> None:
         },
         recent_manual_restores=[],
         recent_backtests=[],
-        operational_summary={},
+        operational_summary={
+            "health_status": "warning",
+            "trading_blocked": False,
+            "poll_stale": True,
+            "writer_queue_degraded": False,
+            "has_recent_mismatch": False,
+            "latest_reconciliation_status": "ok",
+            "latest_manual_restore_status": None,
+            "latest_backtest_strategy": "trend_following",
+            "latest_backtest_market": "KR",
+        },
         recent_logs=[
             {
                 "log_id": 91,
@@ -94,11 +127,17 @@ def test_render_dashboard_outputs_layer5_skeleton_sections() -> None:
 
     headers = [value for kind, value in fake_st.calls if kind == "subheader"]
     assert headers == [
+        "Operations Summary",
         "Health",
         "Open Orders",
         "Recent Trades",
         "Reconciliation",
         "Recent Logs",
     ]
+    metrics = [value for kind, value in fake_st.calls if kind == "metric"]
+    assert len(metrics) == 8
+    assert any(metric["label"] == "Trading Blocked" and metric["value"] == "No" for metric in metrics)
+    assert any(metric["label"] == "Poll Stale" and metric["value"] == "Yes" for metric in metrics)
+    assert any(metric["label"] == "Latest Backtest" and metric["value"] == "trend_following (KR)" for metric in metrics)
     assert any(kind == "dataframe" for kind, _ in fake_st.calls)
     assert any(kind == "json" for kind, _ in fake_st.calls)
