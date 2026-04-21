@@ -487,6 +487,7 @@ Phase 2 기준 canonical 상태는 아래와 같습니다.
     - health
     - auto-trading diagnostics
     - strategy budget
+    - tax summary
     - open orders
     - recent trades
     - reconciliation summary
@@ -572,6 +573,7 @@ Phase 3 운영 기준:
   - buy: `buy_settlement_fx_rate -> buy_trade_fx_rate`
 - Phase 3의 세금 기능은 추산 및 리포트까지로 제한하며, 신고 자동화는 범위 밖으로 둡니다.
 - 현재 저장소 기준 연간 세금 추산은 yearly summary / trade-level report를 JSON 또는 CSV로 export할 수 있습니다.
+- 현재 저장소 기준 dashboard는 `TaxCalculator.calculate_yearly_summary()` 결과를 기반으로 연간 tax summary를 화면에 요약할 수 있습니다.
 
 ### 6.6 장애 복구 (DR)
 

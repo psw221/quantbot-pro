@@ -32,7 +32,7 @@ Layer 5 모니터링 및 DR 잔여 작업 계획
 | L5-04 | Auto-Trading Diagnostics Panel | done | 최근 cycle의 signals/candidates/rejections를 UI에서 볼 수 있다 |
 | L5-05 | Strategy Budget Panel | done | 현재 cash 기반 전략별 목표 주문금액과 단일 종목 상한을 UI에서 볼 수 있다 |
 | L5-06 | Tax Report Export Interface | done | 연간 세후 추산 리포트를 JSON/CSV로 생성할 수 있다 |
-| L5-07 | Tax Dashboard Summary | todo | tax summary 핵심 숫자를 dashboard에서 볼 수 있다 |
+| L5-07 | Tax Dashboard Summary | done | tax summary 핵심 숫자를 dashboard에서 볼 수 있다 |
 | L5-08 | Monthly/Periodic Report Shape | todo | 월간 세후 성과 리포트의 최소 출력 포맷이 고정된다 |
 | L5-09 | DR Telegram Integration | todo | `restore_portfolio.py`가 `dr_restore_started/completed/failed`를 자동 발송한다 |
 | L5-10 | Reconcile Hold Notification | todo | `reconcile_hold` 상태 전환 시 telegram 자동 발송이 연결된다 |
@@ -47,7 +47,8 @@ Layer 5 모니터링 및 DR 잔여 작업 계획
 - `L5-04`는 `system_logs.extra_json`의 auto-trading cycle scalar payload를 사용해 최근 cycle의 signals/candidates/rejections와 skip/fail 이유를 요약한다.
 - `L5-05`는 `latest_portfolio_snapshot.cash_krw`와 `allocation`, `strategy_weights`, `risk.max_single_stock_domestic`, `auto_trading.max_order_notional_per_cycle` 설정을 사용해 현재 전략별 목표 주문금액과 단일 종목 상한을 계산한다.
 - `L5-06`은 `tax/report_export.py`와 `scripts/export_tax_report.py`를 추가해 `TaxCalculator` 결과를 JSON bundle 또는 summary/trades CSV로 출력한다.
-- `L5-07`부터 `L5-08`은 `tax/tax_calculator.py`를 계산 엔진으로 유지하고, dashboard/output 계층만 추가한다.
+- `L5-07`은 `TaxCalculator.calculate_yearly_summary()`를 재사용해 dashboard에서 연간 세후 summary 카드와 by-market 표를 렌더링한다.
+- `L5-08`은 `tax/tax_calculator.py`를 계산 엔진으로 유지하고, periodic output 계층만 추가한다.
 - `L5-09`와 `L5-10`은 notifier 자체를 바꾸지 않고 call-site만 연결한다.
 - `L5-11`은 이번 계획에서 기본적으로 deferred를 추천한다. 현재 `fx_alert`는 notifier 표면만 있고 자동 호출 정책이 없다.
 - `L5-12`는 dashboard가 별도 계산 없이 snapshot만 렌더링할 수 있도록 read-model을 확장하는 단계다.
@@ -82,14 +83,13 @@ python -m compileall monitor tax scripts tests main.py
 - restore telegram integration tests
 
 ## Recommended Start Order
-1. `L5-07 Tax Dashboard Summary`
-2. `L5-09 DR Telegram Integration`
-3. `L5-10 Reconcile Hold Notification`
-4. `L5-13 Runbook/Usage Docs`
+1. `L5-09 DR Telegram Integration`
+2. `L5-10 Reconcile Hold Notification`
+3. `L5-13 Runbook/Usage Docs`
 
 ## First Recommended Task
-- `L5-07 Tax Dashboard Summary`
+- `L5-09 DR Telegram Integration`
 - 이유:
-  - `L5-06`으로 tax 계산 엔진의 export 표면이 생겼다.
-  - 다음은 그 핵심 숫자를 dashboard에 올려야 운영자가 화면에서 세후 성과를 바로 볼 수 있다.
-  - 이후 `DR alerts`와 runbook 문서를 같은 Layer 5 운영 표면으로 정리하기 쉽다.
+  - `L5-07`까지로 dashboard와 tax export 표면이 연결됐다.
+  - 다음은 restore 흐름의 시작/완료/실패를 telegram으로 연결해야 Layer 5의 DR 운영 가시성이 닫힌다.
+  - 이후 reconcile hold 알림과 runbook 문서를 같은 운영 표면으로 정리하기 쉽다.

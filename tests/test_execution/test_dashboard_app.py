@@ -5,7 +5,12 @@ from datetime import datetime, timezone
 from core.models import RuntimeHealthStatus
 from monitor.dashboard import DashboardSnapshot
 from monitor.healthcheck import HealthSnapshot
-from monitor.dashboard_app import build_auto_trading_diagnostics, build_strategy_budget_summary, render_dashboard
+from monitor.dashboard_app import (
+    build_auto_trading_diagnostics,
+    build_strategy_budget_summary,
+    build_tax_dashboard_summary,
+    render_dashboard,
+)
 from tests.test_execution.test_bootstrap import build_settings
 
 
@@ -55,8 +60,41 @@ class FakeColumn:
         )
 
 
+class FakeTaxCalculator:
+    def calculate_yearly_summary(self, year: int, market: str | None = None) -> dict[str, object]:
+        return {
+            "year": year,
+            "market": market,
+            "sell_trade_count": 2,
+            "total_quantity": 4,
+            "realized_gain_loss_krw": 180000.0,
+            "taxable_gain_krw": 210000.0,
+            "total_fees_krw": 5000.0,
+            "total_taxes_krw": 1200.0,
+            "by_market": {
+                "KR": {
+                    "sell_trade_count": 1,
+                    "total_quantity": 1,
+                    "realized_gain_loss_krw": 20000.0,
+                    "taxable_gain_krw": 25000.0,
+                    "total_fees_krw": 1000.0,
+                    "total_taxes_krw": 0.0,
+                },
+                "US": {
+                    "sell_trade_count": 1,
+                    "total_quantity": 3,
+                    "realized_gain_loss_krw": 160000.0,
+                    "taxable_gain_krw": 185000.0,
+                    "total_fees_krw": 4000.0,
+                    "total_taxes_krw": 1200.0,
+                },
+            },
+        }
+
+
 def test_render_dashboard_outputs_layer5_skeleton_sections(tmp_path) -> None:
     settings = build_settings(tmp_path)
+    tax_calculator = FakeTaxCalculator()
     snapshot = DashboardSnapshot(
         generated_at=datetime(2026, 4, 21, 13, 30, tzinfo=timezone.utc),
         health=HealthSnapshot(
@@ -138,13 +176,14 @@ def test_render_dashboard_outputs_layer5_skeleton_sections(tmp_path) -> None:
     )
     fake_st = FakeStreamlit()
 
-    render_dashboard(snapshot, st_module=fake_st, settings=settings)
+    render_dashboard(snapshot, st_module=fake_st, settings=settings, tax_calculator=tax_calculator)
 
     headers = [value for kind, value in fake_st.calls if kind == "subheader"]
     assert headers == [
         "Operations Summary",
         "Auto-Trading Diagnostics",
         "Strategy Budget",
+        "Tax Summary",
         "Health",
         "Open Orders",
         "Recent Trades",
@@ -152,12 +191,13 @@ def test_render_dashboard_outputs_layer5_skeleton_sections(tmp_path) -> None:
         "Recent Logs",
     ]
     metrics = [value for kind, value in fake_st.calls if kind == "metric"]
-    assert len(metrics) == 22
+    assert len(metrics) == 28
     assert any(metric["label"] == "Trading Blocked" and metric["value"] == "No" for metric in metrics)
     assert any(metric["label"] == "Poll Stale" and metric["value"] == "Yes" for metric in metrics)
     assert any(metric["label"] == "Latest Backtest" and metric["value"] == "trend_following (KR)" for metric in metrics)
     assert any(metric["label"] == "Top Rejections" and metric["value"] == "existing_position_reentry_blocked:1,no_position_to_sell:1" for metric in metrics)
     assert any(metric["label"] == "Single-Stock Cap" and metric["value"] == "432,594 KRW" for metric in metrics)
+    assert any(metric["label"] == "Taxes" and metric["value"] == "1,200 KRW" for metric in metrics)
     assert any(kind == "dataframe" for kind, _ in fake_st.calls)
     assert any(kind == "json" for kind, _ in fake_st.calls)
 
@@ -254,3 +294,41 @@ def test_build_strategy_budget_summary_uses_latest_snapshot_cash(tmp_path) -> No
     assert rows["dual_momentum"]["target_notional_krw"] == 1_401_605.53
     assert rows["dual_momentum"]["candidate_cap_krw"] == 432_594.3
     assert rows["factor_investing"]["active_in_auto_trading"] is False
+
+
+def test_build_tax_dashboard_summary_returns_total_and_by_market_rows() -> None:
+    snapshot = DashboardSnapshot(
+        generated_at=datetime(2026, 4, 21, 14, 0, tzinfo=timezone.utc),
+        health=HealthSnapshot(
+            status=RuntimeHealthStatus.NORMAL,
+            trading_blocked=False,
+            scheduler_running=False,
+            writer_queue_running=False,
+            writer_queue_degraded=False,
+            queue_depth=0,
+            token_stale=False,
+            poll_stale=False,
+            last_token_refresh_at=None,
+            last_poll_success_at=None,
+            consecutive_poll_failures=0,
+            last_error=None,
+            details={"status_source": "external_canonical"},
+        ),
+        open_orders=[],
+        recent_trades=[],
+        latest_portfolio_snapshot=None,
+        reconciliation_summary={},
+        recent_manual_restores=[],
+        recent_backtests=[],
+        operational_summary={},
+        recent_logs=[],
+    )
+
+    summary = build_tax_dashboard_summary(snapshot, tax_calculator=FakeTaxCalculator())
+
+    assert summary["year"] == 2026
+    assert summary["sell_trade_count"] == 2
+    assert summary["realized_gain_loss_krw"] == 180000.0
+    assert summary["total_taxes_krw"] == 1200.0
+    assert len(summary["by_market_rows"]) == 2
+    assert summary["by_market_rows"][0]["market"] == "KR"

@@ -5,15 +5,24 @@ from typing import Any
 
 from core.settings import Settings, get_settings
 from monitor.dashboard import DashboardSnapshot, build_read_only_dashboard_snapshot
+from tax.tax_calculator import TaxCalculator
 
 
-def render_dashboard(snapshot: DashboardSnapshot, *, st_module: Any, settings: Settings | None = None) -> None:
+def render_dashboard(
+    snapshot: DashboardSnapshot,
+    *,
+    st_module: Any,
+    settings: Settings | None = None,
+    tax_calculator: TaxCalculator | Any | None = None,
+) -> None:
     resolved_settings = settings or get_settings()
+    resolved_tax_calculator = tax_calculator or TaxCalculator()
     st_module.title("QuantBot Pro Dashboard")
     st_module.caption(f"generated_at={_format_value(snapshot.generated_at)}")
     render_operations_summary_panel(snapshot, st_module=st_module)
     render_auto_trading_diagnostics_panel(snapshot, st_module=st_module)
     render_strategy_budget_panel(snapshot, st_module=st_module, settings=resolved_settings)
+    render_tax_dashboard_summary_panel(snapshot, st_module=st_module, tax_calculator=resolved_tax_calculator)
 
     st_module.subheader("Health")
     st_module.json(
@@ -186,6 +195,70 @@ def build_strategy_budget_summary(snapshot: DashboardSnapshot, *, settings: Sett
         "cycle_notional_cap_krw": round(cycle_notional_cap, 2),
         "active_strategy_labels": ", ".join(settings.auto_trading.strategies),
         "strategy_rows": strategy_rows,
+    }
+
+
+def render_tax_dashboard_summary_panel(
+    snapshot: DashboardSnapshot,
+    *,
+    st_module: Any,
+    tax_calculator: TaxCalculator | Any,
+) -> None:
+    st_module.subheader("Tax Summary")
+    summary = build_tax_dashboard_summary(snapshot, tax_calculator=tax_calculator)
+
+    cards = [
+        ("Tax Year", str(summary["year"])),
+        ("Sell Trades", str(summary["sell_trade_count"])),
+        ("Realized P/L", _format_currency(summary["realized_gain_loss_krw"])),
+        ("Taxable Gain", _format_currency(summary["taxable_gain_krw"])),
+        ("Fees", _format_currency(summary["total_fees_krw"])),
+        ("Taxes", _format_currency(summary["total_taxes_krw"])),
+    ]
+    columns = st_module.columns(3)
+    for index, (label, value) in enumerate(cards):
+        columns[index % len(columns)].metric(label=label, value=value)
+
+    by_market_rows = summary["by_market_rows"]
+    if by_market_rows:
+        st_module.dataframe(_normalize_rows(by_market_rows), use_container_width=True)
+    else:
+        st_module.info("No realized sell trades available for the selected tax year.")
+
+
+def build_tax_dashboard_summary(
+    snapshot: DashboardSnapshot,
+    *,
+    tax_calculator: TaxCalculator | Any,
+    market: str | None = None,
+) -> dict[str, Any]:
+    tax_year = snapshot.generated_at.year
+    yearly_summary = tax_calculator.calculate_yearly_summary(tax_year, market=market)
+    by_market = yearly_summary.get("by_market") or {}
+    by_market_rows = [
+        {
+            "market": market_code,
+            "sell_trade_count": payload.get("sell_trade_count", 0),
+            "total_quantity": payload.get("total_quantity", 0),
+            "realized_gain_loss_krw": payload.get("realized_gain_loss_krw", 0.0),
+            "taxable_gain_krw": payload.get("taxable_gain_krw", 0.0),
+            "total_fees_krw": payload.get("total_fees_krw", 0.0),
+            "total_taxes_krw": payload.get("total_taxes_krw", 0.0),
+        }
+        for market_code, payload in sorted(by_market.items())
+        if isinstance(payload, dict)
+    ]
+
+    return {
+        "year": int(yearly_summary.get("year", tax_year)),
+        "market": yearly_summary.get("market"),
+        "sell_trade_count": int(yearly_summary.get("sell_trade_count", 0)),
+        "total_quantity": int(yearly_summary.get("total_quantity", 0)),
+        "realized_gain_loss_krw": float(yearly_summary.get("realized_gain_loss_krw", 0.0)),
+        "taxable_gain_krw": float(yearly_summary.get("taxable_gain_krw", 0.0)),
+        "total_fees_krw": float(yearly_summary.get("total_fees_krw", 0.0)),
+        "total_taxes_krw": float(yearly_summary.get("total_taxes_krw", 0.0)),
+        "by_market_rows": by_market_rows,
     }
 
 
