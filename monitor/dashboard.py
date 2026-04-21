@@ -7,8 +7,22 @@ from typing import Any
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
-from data.database import BacktestResult, Order, PortfolioSnapshot, ReconciliationRun, SystemLog, Trade, get_read_session
-from monitor.healthcheck import HealthSnapshot, build_health_snapshot
+from data.database import (
+    BacktestResult,
+    Order,
+    PortfolioSnapshot,
+    ReconciliationRun,
+    SystemLog,
+    TokenStore,
+    Trade,
+    get_read_session,
+)
+from monitor.healthcheck import (
+    HealthSnapshot,
+    build_health_snapshot,
+    evaluate_health_snapshot,
+    health_input_from_runtime_snapshot,
+)
 
 
 UTC = timezone.utc
@@ -42,7 +56,7 @@ def build_dashboard_snapshot(
     recent_reconciliation_window: timedelta = timedelta(days=1),
 ) -> DashboardSnapshot:
     reference_now = now or datetime.now(UTC)
-    health = build_health_snapshot(runtime, now=reference_now)
+    health = _build_dashboard_health(runtime=runtime, now=reference_now)
 
     with session_provider() as session:
         open_orders = _load_open_orders(session, limit=max_open_orders)
@@ -74,6 +88,125 @@ def build_dashboard_snapshot(
         ),
         recent_logs=recent_logs,
     )
+
+
+def build_read_only_dashboard_snapshot(
+    *,
+    env: str,
+    session_provider=get_read_session,
+    now: datetime | None = None,
+    max_open_orders: int = 20,
+    max_recent_trades: int = 20,
+    max_recent_manual_restores: int = 10,
+    max_recent_backtests: int = 10,
+    max_recent_logs: int = 20,
+    recent_reconciliation_window: timedelta = timedelta(days=1),
+    recent_error_window: timedelta = timedelta(days=1),
+) -> DashboardSnapshot:
+    reference_now = now or datetime.now(UTC)
+
+    with session_provider() as session:
+        runtime_snapshot = _load_read_only_runtime_snapshot(
+            session,
+            env=env,
+            now=reference_now,
+            recent_error_window=recent_error_window,
+        )
+        health = _build_dashboard_health(runtime_snapshot=runtime_snapshot, now=reference_now)
+        open_orders = _load_open_orders(session, limit=max_open_orders)
+        recent_trades = _load_recent_trades(session, limit=max_recent_trades)
+        latest_portfolio_snapshot = _load_latest_portfolio_snapshot(session)
+        reconciliation_summary = _load_reconciliation_summary(
+            session,
+            since=reference_now - recent_reconciliation_window,
+        )
+        recent_manual_restores = _load_recent_manual_restores(session, limit=max_recent_manual_restores)
+        recent_backtests = _load_recent_backtests(session, limit=max_recent_backtests)
+        recent_logs = _load_recent_logs(session, limit=max_recent_logs)
+
+    return DashboardSnapshot(
+        generated_at=reference_now,
+        health=health,
+        open_orders=open_orders,
+        recent_trades=recent_trades,
+        latest_portfolio_snapshot=latest_portfolio_snapshot,
+        reconciliation_summary=reconciliation_summary,
+        recent_manual_restores=recent_manual_restores,
+        recent_backtests=recent_backtests,
+        operational_summary=_build_operational_summary(
+            health=health,
+            reconciliation_summary=reconciliation_summary,
+            recent_manual_restores=recent_manual_restores,
+            recent_backtests=recent_backtests,
+            latest_portfolio_snapshot=latest_portfolio_snapshot,
+        ),
+        recent_logs=recent_logs,
+    )
+
+
+def _build_dashboard_health(
+    *,
+    runtime=None,
+    runtime_snapshot: dict[str, Any] | None = None,
+    now: datetime,
+) -> HealthSnapshot:
+    if runtime_snapshot is not None:
+        return evaluate_health_snapshot(health_input_from_runtime_snapshot(runtime_snapshot), now=now)
+    return build_health_snapshot(runtime, now=now)
+
+
+def _load_read_only_runtime_snapshot(
+    session: Session,
+    *,
+    env: str,
+    now: datetime,
+    recent_error_window: timedelta,
+) -> dict[str, Any]:
+    token_row = session.scalar(
+        select(TokenStore)
+        .where(TokenStore.env == env)
+        .order_by(desc(TokenStore.issued_at), desc(TokenStore.id))
+        .limit(1)
+    )
+    latest_reconciliation = session.scalar(
+        select(ReconciliationRun)
+        .where(ReconciliationRun.source_env == env)
+        .order_by(desc(ReconciliationRun.completed_at), desc(ReconciliationRun.started_at), desc(ReconciliationRun.id))
+        .limit(1)
+    )
+    recent_error = session.scalar(
+        select(SystemLog)
+        .where(SystemLog.level.in_(("ERROR", "CRITICAL")))
+        .where(SystemLog.created_at >= now - recent_error_window)
+        .order_by(desc(SystemLog.created_at), desc(SystemLog.id))
+        .limit(1)
+    )
+
+    last_poll_success_at = None
+    trading_blocked = False
+    if latest_reconciliation is not None:
+        last_poll_success_at = latest_reconciliation.completed_at or latest_reconciliation.started_at
+        trading_blocked = latest_reconciliation.status in {"warning", "failed"} and latest_reconciliation.mismatch_count > 0
+
+    last_token_refresh_at = None
+    if token_row is not None and token_row.is_valid:
+        last_token_refresh_at = token_row.issued_at
+
+    return {
+        "scheduler_running": False,
+        "trading_blocked": trading_blocked,
+        "last_token_refresh_at": last_token_refresh_at,
+        "last_poll_success_at": last_poll_success_at,
+        "consecutive_poll_failures": 0,
+        "last_error": None if recent_error is None else recent_error.message,
+        "health_status": None,
+        "writer_queue": {
+            "running": False,
+            "degraded": False,
+            "queue_depth": 0,
+            "last_error": None,
+        },
+    }
 
 
 def _load_open_orders(session: Session, *, limit: int) -> list[dict[str, Any]]:

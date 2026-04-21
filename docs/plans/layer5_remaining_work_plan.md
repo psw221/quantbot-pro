@@ -4,7 +4,7 @@
 Layer 5 모니터링 및 DR 잔여 작업 계획
 
 ## Status
-- state: proposed
+- state: in_progress
 - default_env: vts
 - scope_focus: layer5_user_surface
 
@@ -26,7 +26,7 @@ Layer 5 모니터링 및 DR 잔여 작업 계획
 ## Work Breakdown
 | ID | Task | Status | Done Criteria |
 | --- | --- | --- | --- |
-| L5-01 | Dashboard App Skeleton | todo | Streamlit 앱에서 health, open orders, recent trades, reconciliation, logs 섹션이 보인다 |
+| L5-01 | Dashboard App Skeleton | done | Streamlit 앱에서 health, open orders, recent trades, reconciliation, logs 섹션이 보인다 |
 | L5-02 | Operations Summary Panel | todo | `operational_summary`가 카드형으로 렌더링된다 |
 | L5-03 | Restore/Backtest Panels | todo | recent manual restores / recent backtests를 UI에서 볼 수 있다 |
 | L5-04 | Auto-Trading Diagnostics Panel | todo | 최근 cycle의 signals/candidates/rejections를 UI에서 볼 수 있다 |
@@ -41,7 +41,8 @@ Layer 5 모니터링 및 DR 잔여 작업 계획
 | L5-13 | Runbook/Usage Docs | todo | dashboard 실행, tax export, restore/telegram 해석 방법이 문서화된다 |
 
 ## Implementation Notes
-- `L5-01`부터 `L5-05`는 `monitor/dashboard.py`의 read-model을 재사용하고, 별도 Streamlit 엔트리포인트를 추가하는 방식으로 구현한다.
+- `L5-01`은 `monitor/dashboard_app.py`를 추가해 read-only Streamlit 엔트리포인트를 만들고, `monitor/dashboard.py`의 read-model을 그대로 재사용한다.
+- `L5-01`의 health 표면은 runtime 직접 참조가 아니라 `token_store`, 최근 reconciliation, 최근 error log를 이용한 read-only fallback으로 구성한다.
 - `L5-06`부터 `L5-08`은 `tax/tax_calculator.py`를 계산 엔진으로 유지하고, export/output 계층만 추가한다.
 - `L5-09`와 `L5-10`은 notifier 자체를 바꾸지 않고 call-site만 연결한다.
 - `L5-11`은 이번 계획에서 기본적으로 deferred를 추천한다. 현재 `fx_alert`는 notifier 표면만 있고 자동 호출 정책이 없다.
@@ -77,19 +78,18 @@ python -m compileall monitor tax scripts tests main.py
 - restore telegram integration tests
 
 ## Recommended Start Order
-1. `L5-01 Dashboard App Skeleton`
-2. `L5-02 Operations Summary Panel`
-3. `L5-04 Auto-Trading Diagnostics Panel`
-4. `L5-05 Strategy Budget Panel`
-5. `L5-06 Tax Report Export Interface`
-6. `L5-07 Tax Dashboard Summary`
-7. `L5-09 DR Telegram Integration`
-8. `L5-10 Reconcile Hold Notification`
-9. `L5-13 Runbook/Usage Docs`
+1. `L5-02 Operations Summary Panel`
+2. `L5-04 Auto-Trading Diagnostics Panel`
+3. `L5-05 Strategy Budget Panel`
+4. `L5-06 Tax Report Export Interface`
+5. `L5-07 Tax Dashboard Summary`
+6. `L5-09 DR Telegram Integration`
+7. `L5-10 Reconcile Hold Notification`
+8. `L5-13 Runbook/Usage Docs`
 
 ## First Recommended Task
-- `L5-01 Dashboard App Skeleton`
+- `L5-02 Operations Summary Panel`
 - 이유:
-  - 현재 Layer 5의 가장 큰 공백은 Streamlit 대시보드의 실제 사용자 표면이다.
-  - 기존 `monitor/dashboard.py` snapshot builder를 그대로 재사용할 수 있어서 범위가 가장 작고 안전하다.
-  - 이후 `operations summary`, `auto-trading diagnostics`, `strategy budget`, `tax summary`를 같은 UI 위에 점진적으로 얹기 쉽다.
+  - `L5-01`로 기본 Streamlit 엔트리포인트와 read-only health adapter가 생겼다.
+  - 다음은 상단 요약 카드로 `blocked / stale / mismatch`를 먼저 드러내야 운영자가 첫 화면에서 상태를 판단할 수 있다.
+  - 이후 `auto-trading diagnostics`, `strategy budget`, `tax summary`를 같은 화면에 순차적으로 확장하기 쉽다.

@@ -483,6 +483,12 @@ Phase 2 기준 canonical 상태는 아래와 같습니다.
 
 - 헬스체크는 external canonical health 기준을 사용하며 `normal`, `warning`, `critical`만 외부 표면으로 노출합니다.
 - 대시보드는 read-only snapshot 계층으로 유지하고 아래 항목을 함께 요약합니다.
+  - 현재 저장소 기준 Streamlit dashboard skeleton은 아래 기본 섹션을 이미 제공합니다.
+    - health
+    - open orders
+    - recent trades
+    - reconciliation summary
+    - recent system logs
   - open orders
   - recent trades
   - latest portfolio snapshot

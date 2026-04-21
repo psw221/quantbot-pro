@@ -17,7 +17,7 @@ from data.database import (
 )
 from execution.runtime import TradingRuntime
 from execution.writer_queue import WriterQueue
-from monitor.dashboard import build_dashboard_snapshot, dashboard_snapshot_to_dict
+from monitor.dashboard import build_dashboard_snapshot, build_read_only_dashboard_snapshot, dashboard_snapshot_to_dict
 from tests.test_execution.test_bootstrap import build_settings
 
 
@@ -223,3 +223,69 @@ def test_dashboard_snapshot_handles_empty_read_models(tmp_path) -> None:
     assert snapshot.operational_summary["recent_backtest_count"] == 0
     assert snapshot.operational_summary["has_recent_mismatch"] is False
     assert snapshot.recent_logs == []
+
+
+def test_read_only_dashboard_snapshot_builds_health_from_db_rows(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    init_db(settings)
+    session_factory = get_session_factory()
+    reference_now = datetime(2026, 4, 21, 13, 0, tzinfo=timezone.utc)
+
+    with session_factory() as session:
+        session.add(
+            PortfolioSnapshot(
+                snapshot_date=reference_now - timedelta(days=1),
+                total_value_krw=10000000,
+                cash_krw=2500000,
+                domestic_value_krw=7500000,
+                overseas_value_krw=0,
+                usd_krw_rate=1330,
+                daily_return=0.0,
+                cumulative_return=0.01,
+                drawdown=-0.01,
+                max_drawdown=-0.05,
+                position_count=2,
+                created_at=utc_now(),
+            )
+        )
+        session.add(
+            ReconciliationRun(
+                run_type="scheduled_poll",
+                source_env="vts",
+                started_at=reference_now - timedelta(minutes=12),
+                completed_at=reference_now - timedelta(minutes=11),
+                mismatch_count=0,
+                status="ok",
+                summary_json="{}",
+                created_at=utc_now(),
+            )
+        )
+        session.add(
+            SystemLog(
+                level="INFO",
+                module="execution.runtime",
+                message="dashboard fixture",
+                extra_json=None,
+                created_at=reference_now - timedelta(minutes=5),
+            )
+        )
+        from data.database import TokenStore
+
+        session.add(
+            TokenStore(
+                env="vts",
+                expires_at=reference_now + timedelta(hours=23),
+                issued_at=reference_now - timedelta(hours=2),
+                is_valid=True,
+            )
+        )
+        session.commit()
+
+    snapshot = build_read_only_dashboard_snapshot(env="vts", now=reference_now)
+
+    assert snapshot.health.details["status_source"] == "external_canonical"
+    assert snapshot.health.token_stale is False
+    assert snapshot.health.poll_stale is False
+    assert snapshot.health.trading_blocked is False
+    assert snapshot.latest_portfolio_snapshot is not None
+    assert snapshot.reconciliation_summary["latest_status"] == "ok"
