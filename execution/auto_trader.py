@@ -202,6 +202,15 @@ class AutoTrader:
                 )
                 continue
 
+            if signal.action == "buy" and position is not None and position.quantity > 0:
+                result.rejected_signals.append(
+                    AutoTradeSignalRejection(
+                        signal=signal,
+                        reason="existing_position_reentry_blocked",
+                    )
+                )
+                continue
+
             current_price = latest_prices.get(signal.ticker)
             if current_price is None or current_price <= 0:
                 result.rejected_signals.append(

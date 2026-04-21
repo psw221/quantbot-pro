@@ -4,7 +4,7 @@
 전략 기반 자동매매 End-to-End 실행 계획
 
 ## Status
-- state: proposed
+- state: done
 - default_env: vts
 - rollout_mode: scheduled
 - markets: KR only
@@ -19,11 +19,12 @@
 ## Current State
 - `main.py`는 현재 `TradingRuntime`와 `AutoTrader` wiring을 함께 기동한다.
 - `execution/runtime.py`는 token refresh, broker polling, fill ingestion, reconciliation, pre-close cancel, healthcheck만 수행한다.
-- `strategy -> resolver -> risk -> sizing -> order submit` runtime 경로는 구현되었고, 현재 남은 범위는 live market smoke validation과 운영 조건 점검이다.
+- `strategy -> resolver -> risk -> sizing -> order submit` runtime 경로는 구현되었고, Phase 4 plan 범위의 live market smoke validation까지 닫혔다.
 - `StrategyDataProvider` protocol 기준 KR 자동매매용 provider와 live loader fallback이 구현되었으며, source 품질 검증은 장중 smoke 단계에서 확인한다.
 - `P4-01`부터 `P4-05B`까지 scheduler hook, provider, orchestration, submit integration, safeguard/logging, `main.py` wiring, blocker hardening은 준비되었다.
-- `P4-06` live smoke validation의 남은 리스크는 live market 조건과 실제 signal/sizing 결과다.
+- `P4-06` live smoke validation은 실제 VTS 주문 제출, 체결 반영, reconciliation 정상 유지, 반복 진입 가드 검증까지 완료했다.
 - VTS soak 실행을 위해 `config/config.yaml`은 `auto_trading.enabled=true`, `monitor.telegram.enabled=true` 기준으로 정리하고, `scripts/start_auto_trading.ps1`, `scripts/stop_auto_trading.ps1`를 통해 `main.py` runtime을 백그라운드로 기동/종료할 수 있게 한다.
+- 장중 soak에서 확인된 반복 진입 리스크를 막기 위해, 같은 `ticker + strategy` 기보유 포지션에 대한 추가 `buy` 진입은 기본적으로 차단한다.
 
 ## Scope
 ### In Scope
@@ -139,10 +140,11 @@
   - polling stale
   - market closed
 - 추가 상한:
-  - cycle당 신규 주문 최대 1건
-  - 동일 ticker 중복 주문 금지
-  - open order 존재 ticker 재진입 금지
-  - unresolved signal conflict는 `hold`
+- cycle당 신규 주문 최대 1건
+- 동일 ticker 중복 주문 금지
+- open order 존재 ticker 재진입 금지
+- 같은 `ticker + strategy` 기보유 포지션에 대한 추가 `buy` 진입 금지
+- unresolved signal conflict는 `hold`
 - notifier는 새 정책을 추가하지 않고, 이번 단계에서는 `system_logs` 기록 중심으로 제한한다.
 
 ## Public Interfaces
@@ -170,7 +172,7 @@
 | P4-05 | Runtime safeguards + logging | done | 위험 상태에서 주문 제출 없이 skip 이유가 기록된다 |
 | P4-05A | main.py actual auto-trading wiring | done | `main.py` 실행만으로 KR VTS strategy cycle이 실제 `AutoTrader.execute_cycle(...)`까지 연결된다 |
 | P4-05B | P4-06 blocker hardening | done | broker cash fallback, cycle-scoped token reuse, price-context 보강으로 live cycle이 구조적 `data_unavailable` 없이 실행된다 |
-| P4-06 | VTS scheduled smoke validation | todo | 장중 1회 이상 자동 진입 또는 청산이 기존 체결/원장 경로로 반영된다 |
+| P4-06 | VTS scheduled smoke validation | done | 장중 1회 이상 자동 진입 또는 청산이 기존 체결/원장 경로로 반영된다 |
 
 ## Implementation Notes
 - `P4-01` 완료
@@ -213,6 +215,13 @@
   - `main.py`는 `TelegramNotifier`를 runtime에 주입해 기존 운영 이벤트(`token_refresh_failure`, `polling_mismatch`, `trading_blocked`, `writer_queue_degraded`, `pre_close_cancel_failure`)를 실제 텔레그램 송신 경로로 연결한다.
   - `scripts/start_auto_trading.ps1`는 `env=vts`, `auto_trading.enabled=true`를 확인한 뒤 `main.py`를 백그라운드로 실행하고 PID/로그 파일을 남긴다.
   - `scripts/stop_auto_trading.ps1`는 PID 파일과 command line을 확인한 뒤 동일 runtime만 안전하게 종료한다.
+- 반복 진입 가드 보강
+  - VTS scheduled soak 중 확인된 반복 매수 누적을 막기 위해 `execution.auto_trader`는 같은 `ticker + strategy`에 이미 열린 포지션이 있으면 추가 `buy` 후보를 `existing_position_reentry_blocked`로 reject한다.
+  - 이 가드는 동일 종목을 다른 전략이 보유하는 경우까지 막지 않으며, PRD의 복수 전략 동시 매수 정책은 유지한다.
+- `P4-06` 완료
+  - KR VTS 장중에서 scheduler 기반 strategy cycle이 실제로 주문 제출과 기존 체결/원장 경로로 이어지는 것을 확인했다.
+  - `order -> order_executions -> trades -> positions` 반영과 `reconciliation_runs.status=ok`, `mismatch_count=0` 유지가 live로 검증됐다.
+  - VTS soak 중 발견된 반복 진입 이슈는 `existing_position_reentry_blocked` 가드 추가 후 runtime 재시작과 후속 cycle 검증으로 재발 방지까지 확인했다.
 
 ## Test Plan
 - 단위 테스트
@@ -255,10 +264,10 @@ python -m compileall core execution strategy risk tests main.py
   - task status, verification scope, implementation notes 갱신
 
 ## Recommended Start Order
-1. `P4-06 VTS scheduled smoke validation`
+1. `Phase 4 VTS soak observation`
 
 ## First Recommended Task
-- `P4-06 VTS scheduled smoke validation`
+- `Phase 4 VTS soak observation`
 - 이유:
-  - `P4-05A`까지로 실제 기동 경로 wiring이 닫혔으므로, 다음 남은 핵심 검증은 장중 VTS에서 scheduler 기반 cycle이 주문 제출과 기존 체결/원장 경로로 이어지는지 확인하는 것이다.
-  - 현재 불확실성은 구현보다 live market 조건과 broker 응답이므로, 다음 단계는 운영 검증이 우선이다.
+  - plan 범위의 구현과 smoke validation은 완료되었고, 다음 남은 과제는 장시간 VTS 운용에서 운영 안정성, rejection pattern, 수익률/리스크를 관찰하는 것이다.
+  - 구현 미완료가 아니라 soak run 성격의 후속 운영 검증이므로 별도 작업 흐름으로 관리하는 편이 맞다.

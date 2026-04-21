@@ -219,6 +219,127 @@ def test_auto_trader_rejects_ticker_with_existing_open_order(tmp_path) -> None:
     assert result.rejected_signals[0].reason == "open_order_exists"
 
 
+def test_auto_trader_rejects_buy_reentry_when_same_strategy_position_exists(tmp_path) -> None:
+    settings = build_settings(
+        tmp_path,
+        auto_trading={"enabled": True, "strategies": ["trend_following"]},
+    )
+    init_db(settings)
+    session_factory = get_session_factory()
+    as_of = datetime(2026, 5, 1, tzinfo=UTC)
+
+    with session_factory() as session:
+        session.add(
+            Position(
+                ticker="005930",
+                market="KR",
+                strategy="trend_following",
+                quantity=3,
+                avg_cost=70000,
+                current_price=71000,
+                highest_price=71500,
+                entry_date=as_of - timedelta(days=5),
+                updated_at=utc_now(),
+            )
+        )
+        session.add(
+            PortfolioSnapshot(
+                snapshot_date=as_of - timedelta(days=1),
+                total_value_krw=2000000,
+                cash_krw=500000,
+                domestic_value_krw=1500000,
+                overseas_value_krw=0,
+                usd_krw_rate=1350,
+                daily_return=0,
+                cumulative_return=0,
+                drawdown=0,
+                max_drawdown=0,
+                position_count=1,
+                created_at=utc_now(),
+            )
+        )
+        session.commit()
+
+    provider = KRStrategyDataProvider(
+        price_history_loader=lambda tickers, requested_as_of, lookback_days: {
+            "005930": _kr_bars("005930", [70000 + index * 100 for index in range(90)])
+        },
+        settings=settings,
+    )
+    trader = AutoTrader(
+        data_provider=provider,
+        universe_loader=lambda market, timestamp: ["005930"],
+        strategy_builders={"trend_following": lambda settings, provider: StubEntryStrategy("trend_following")},
+        settings=settings,
+    )
+
+    result = trader.run_cycle("KR", as_of)
+
+    assert result.order_candidates == []
+    assert len(result.rejected_signals) == 1
+    assert result.rejected_signals[0].reason == "existing_position_reentry_blocked"
+
+
+def test_auto_trader_allows_buy_when_position_exists_for_different_strategy(tmp_path) -> None:
+    settings = build_settings(
+        tmp_path,
+        auto_trading={"enabled": True, "strategies": ["trend_following"]},
+    )
+    init_db(settings)
+    session_factory = get_session_factory()
+    as_of = datetime(2026, 5, 1, tzinfo=UTC)
+
+    with session_factory() as session:
+        session.add(
+            Position(
+                ticker="005930",
+                market="KR",
+                strategy="dual_momentum",
+                quantity=3,
+                avg_cost=70000,
+                current_price=71000,
+                highest_price=71500,
+                entry_date=as_of - timedelta(days=5),
+                updated_at=utc_now(),
+            )
+        )
+        session.add(
+            PortfolioSnapshot(
+                snapshot_date=as_of - timedelta(days=1),
+                total_value_krw=4000000,
+                cash_krw=2500000,
+                domestic_value_krw=1500000,
+                overseas_value_krw=0,
+                usd_krw_rate=1350,
+                daily_return=0,
+                cumulative_return=0,
+                drawdown=0,
+                max_drawdown=0,
+                position_count=1,
+                created_at=utc_now(),
+            )
+        )
+        session.commit()
+
+    provider = KRStrategyDataProvider(
+        price_history_loader=lambda tickers, requested_as_of, lookback_days: {
+            "005930": _kr_bars("005930", [70000 + index * 100 for index in range(90)])
+        },
+        settings=settings,
+    )
+    trader = AutoTrader(
+        data_provider=provider,
+        universe_loader=lambda market, timestamp: ["005930"],
+        strategy_builders={"trend_following": lambda settings, provider: StubEntryStrategy("trend_following")},
+        settings=settings,
+    )
+
+    result = trader.run_cycle("KR", as_of)
+
+    assert len(result.order_candidates) == 1
+    assert result.rejected_signals == []
+
+
 def test_auto_trader_builds_exit_candidate_from_existing_position(tmp_path) -> None:
     settings = build_settings(
         tmp_path,
