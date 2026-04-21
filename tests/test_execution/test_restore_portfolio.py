@@ -15,6 +15,38 @@ from core.models import BrokerOrderSnapshot, BrokerPollingSnapshot, BrokerPositi
 UTC = timezone.utc
 
 
+class RecordingTelegramNotifier:
+    def __init__(self) -> None:
+        self.events: list[dict[str, object]] = []
+
+    def send_event(
+        self,
+        event_type: str,
+        message: str,
+        context: dict[str, object] | None = None,
+        *,
+        severity: str = "warning",
+        title: str | None = None,
+        created_at=None,
+        source_env: str | None = None,
+    ) -> None:
+        self.events.append(
+            {
+                "event_type": event_type,
+                "message": message,
+                "context": dict(context or {}),
+                "severity": severity,
+                "title": title,
+                "source_env": source_env,
+            }
+        )
+
+
+class FailingReconciliationService:
+    def reconcile_snapshot(self, snapshot, run_type: str = "scheduled_poll"):  # noqa: ANN001
+        raise RuntimeError("forced reconciliation failure")
+
+
 def _build_snapshot(reference_now: datetime) -> BrokerPollingSnapshot:
     return BrokerPollingSnapshot(
         positions=[
@@ -112,6 +144,7 @@ def test_restore_portfolio_preview_reports_position_and_order_mismatches(tmp_pat
     writer_queue = WriterQueue()
     writer_queue.start()
     reference_now = datetime(2026, 4, 16, 9, 0, tzinfo=UTC)
+    notifier = RecordingTelegramNotifier()
 
     try:
         service = RestorePortfolioService(
@@ -119,6 +152,7 @@ def test_restore_portfolio_preview_reports_position_and_order_mismatches(tmp_pat
             reconciliation_service=ReconciliationService(writer_queue=writer_queue, settings=settings),
             order_manager=OrderManager(writer_queue=writer_queue, settings=settings),
             operations_recorder=OperationsRecorder(writer_queue),
+            telegram_notifier=notifier,
             settings=settings,
         )
         summary = service.preview(_build_snapshot(reference_now), market="US")
@@ -129,6 +163,7 @@ def test_restore_portfolio_preview_reports_position_and_order_mismatches(tmp_pat
     assert summary.mismatch_count == 3
     assert summary.position_mismatches[0]["internal_quantity"] == 5
     assert {item["reason"] for item in summary.order_mismatches} == {"broker_only", "internal_only"}
+    assert notifier.events == []
 
     session_factory = get_session_factory()
     with session_factory() as session:
@@ -145,6 +180,7 @@ def test_restore_portfolio_apply_records_reconciliation_logs_and_snapshot(tmp_pa
     writer_queue = WriterQueue()
     writer_queue.start()
     reference_now = datetime(2026, 4, 16, 9, 0, tzinfo=UTC)
+    notifier = RecordingTelegramNotifier()
 
     try:
         order_manager = OrderManager(writer_queue=writer_queue, settings=settings)
@@ -154,6 +190,7 @@ def test_restore_portfolio_apply_records_reconciliation_logs_and_snapshot(tmp_pa
             reconciliation_service=ReconciliationService(writer_queue=writer_queue, settings=settings),
             order_manager=order_manager,
             operations_recorder=OperationsRecorder(writer_queue),
+            telegram_notifier=notifier,
             settings=settings,
         )
         summary = service.restore(_build_snapshot(reference_now), market="US", apply=True)
@@ -163,6 +200,11 @@ def test_restore_portfolio_apply_records_reconciliation_logs_and_snapshot(tmp_pa
     assert summary.mode == "apply"
     assert summary.reconciliation_status == "mismatch_detected"
     assert order_manager.reconciliation_status.value == "mismatch_detected"
+    assert [event["event_type"] for event in notifier.events] == [
+        "dr_restore_started",
+        "dr_restore_completed",
+    ]
+    assert notifier.events[1]["context"]["status"] == "mismatch_detected"
 
     session_factory = get_session_factory()
     with session_factory() as session:
@@ -202,3 +244,37 @@ def test_restore_portfolio_apply_requires_trading_block_confirmation(tmp_path) -
             raise AssertionError("expected RuntimeError")
     finally:
         writer_queue.stop()
+
+
+def test_restore_portfolio_apply_emits_failure_notification(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    init_db(settings)
+    writer_queue = WriterQueue()
+    writer_queue.start()
+    notifier = RecordingTelegramNotifier()
+
+    try:
+        order_manager = OrderManager(writer_queue=writer_queue, settings=settings)
+        order_manager.trading_blocked = True
+        service = RestorePortfolioService(
+            writer_queue=writer_queue,
+            reconciliation_service=FailingReconciliationService(),
+            order_manager=order_manager,
+            operations_recorder=OperationsRecorder(writer_queue),
+            telegram_notifier=notifier,
+            settings=settings,
+        )
+        try:
+            service.restore(_build_snapshot(datetime(2026, 4, 16, 9, 0, tzinfo=UTC)), market="US", apply=True)
+        except RuntimeError as exc:
+            assert "forced reconciliation failure" in str(exc)
+        else:
+            raise AssertionError("expected RuntimeError")
+    finally:
+        writer_queue.stop()
+
+    assert [event["event_type"] for event in notifier.events] == [
+        "dr_restore_started",
+        "dr_restore_failed",
+    ]
+    assert notifier.events[1]["severity"] == "critical"

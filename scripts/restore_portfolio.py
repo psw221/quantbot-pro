@@ -14,6 +14,7 @@ from execution.order_manager import OrderManager
 from execution.reconciliation import ReconciliationService
 from execution.writer_queue import WriterQueue
 from monitor.operations import OperationsRecorder, PortfolioSnapshotPayload
+from monitor.telegram_bot import TelegramNotifier
 
 
 OPEN_ORDER_STATUSES = {
@@ -49,12 +50,14 @@ class RestorePortfolioService:
         reconciliation_service: ReconciliationService,
         order_manager: OrderManager | None = None,
         operations_recorder: OperationsRecorder | None = None,
+        telegram_notifier: TelegramNotifier | None = None,
         settings: Settings | None = None,
     ) -> None:
         self.writer_queue = writer_queue
         self.reconciliation_service = reconciliation_service
         self.order_manager = order_manager
         self.operations_recorder = operations_recorder
+        self.telegram_notifier = telegram_notifier
         self.settings = settings or get_settings()
 
     def preview(self, snapshot: BrokerPollingSnapshot, *, market: str = "ALL") -> RestorePortfolioSummary:
@@ -95,6 +98,15 @@ class RestorePortfolioService:
                 message="restore apply started",
                 extra=started_extra,
             )
+        self._send_restore_event(
+            "dr_restore_started",
+            "restore apply started",
+            severity="warning",
+            context={
+                **started_extra,
+                "run_type": "manual_restore",
+            },
+        )
 
         try:
             result = self.reconciliation_service.reconcile_snapshot(filtered, run_type="manual_restore")
@@ -113,6 +125,18 @@ class RestorePortfolioService:
                         "mismatch_count": summary.mismatch_count,
                     },
                 )
+            self._send_restore_event(
+                "dr_restore_completed",
+                "restore apply completed",
+                severity="info",
+                context={
+                    "market": summary.market,
+                    "run_type": "manual_restore",
+                    "status": result.status.value,
+                    "mismatch_count": summary.mismatch_count,
+                    "mode": "apply",
+                },
+            )
             summary.mode = "apply"
             summary.reconciliation_status = result.status.value
             return summary
@@ -128,7 +152,40 @@ class RestorePortfolioService:
                         "error": str(exc),
                     },
                 )
+            self._send_restore_event(
+                "dr_restore_failed",
+                "restore apply failed",
+                severity="critical",
+                context={
+                    "market": summary.market,
+                    "run_type": "manual_restore",
+                    "mode": "apply",
+                    "error": str(exc),
+                },
+            )
             raise
+
+    def _send_restore_event(
+        self,
+        event_type: str,
+        message: str,
+        *,
+        severity: str,
+        context: dict[str, Any],
+    ) -> None:
+        if self.telegram_notifier is None:
+            return
+        try:
+            self.telegram_notifier.send_event(
+                event_type,
+                message,
+                context=context,
+                severity=severity,
+                source_env=self.settings.env.value,
+            )
+        except Exception:
+            # DR notifications are best-effort and must not interrupt restore flow.
+            return
 
     def _record_optional_portfolio_snapshot(self, snapshot: BrokerPollingSnapshot) -> None:
         if self.operations_recorder is None:
@@ -292,6 +349,7 @@ def main() -> None:
             reconciliation_service=ReconciliationService(writer_queue=writer_queue, settings=settings),
             order_manager=order_manager,
             operations_recorder=OperationsRecorder(writer_queue),
+            telegram_notifier=TelegramNotifier(settings=settings),
             settings=settings,
         )
         summary = service.restore(snapshot, market=args.market, apply=args.apply)

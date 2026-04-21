@@ -34,7 +34,7 @@ Layer 5 모니터링 및 DR 잔여 작업 계획
 | L5-06 | Tax Report Export Interface | done | 연간 세후 추산 리포트를 JSON/CSV로 생성할 수 있다 |
 | L5-07 | Tax Dashboard Summary | done | tax summary 핵심 숫자를 dashboard에서 볼 수 있다 |
 | L5-08 | Monthly/Periodic Report Shape | todo | 월간 세후 성과 리포트의 최소 출력 포맷이 고정된다 |
-| L5-09 | DR Telegram Integration | todo | `restore_portfolio.py`가 `dr_restore_started/completed/failed`를 자동 발송한다 |
+| L5-09 | DR Telegram Integration | done | `restore_portfolio.py`가 `dr_restore_started/completed/failed`를 apply 흐름에서 자동 발송한다 |
 | L5-10 | Reconcile Hold Notification | todo | `reconcile_hold` 상태 전환 시 telegram 자동 발송이 연결된다 |
 | L5-11 | FX Alert Wiring Or Defer | todo | `fx_alert` 자동 호출을 구현하거나 deferred로 문서화한다 |
 | L5-12 | Dashboard Snapshot Enrichment | todo | strategy budget / tax summary / auto-trading diagnostics가 snapshot에 포함된다 |
@@ -49,7 +49,8 @@ Layer 5 모니터링 및 DR 잔여 작업 계획
 - `L5-06`은 `tax/report_export.py`와 `scripts/export_tax_report.py`를 추가해 `TaxCalculator` 결과를 JSON bundle 또는 summary/trades CSV로 출력한다.
 - `L5-07`은 `TaxCalculator.calculate_yearly_summary()`를 재사용해 dashboard에서 연간 세후 summary 카드와 by-market 표를 렌더링한다.
 - `L5-08`은 `tax/tax_calculator.py`를 계산 엔진으로 유지하고, periodic output 계층만 추가한다.
-- `L5-09`와 `L5-10`은 notifier 자체를 바꾸지 않고 call-site만 연결한다.
+- `L5-09`는 `restore_portfolio.py`의 apply 흐름에 `dr_restore_started/completed/failed`를 best-effort로 연결하고, `dry-run`은 no-write/no-notify 계약을 유지한다.
+- `L5-10`은 notifier 자체를 바꾸지 않고 call-site만 연결한다.
 - `L5-11`은 이번 계획에서 기본적으로 deferred를 추천한다. 현재 `fx_alert`는 notifier 표면만 있고 자동 호출 정책이 없다.
 - `L5-12`는 dashboard가 별도 계산 없이 snapshot만 렌더링할 수 있도록 read-model을 확장하는 단계다.
 - `L5-13`은 운영자가 실행 절차를 문서만 보고 따라갈 수 있을 정도의 사용 문서를 목표로 한다.
@@ -83,13 +84,13 @@ python -m compileall monitor tax scripts tests main.py
 - restore telegram integration tests
 
 ## Recommended Start Order
-1. `L5-09 DR Telegram Integration`
-2. `L5-10 Reconcile Hold Notification`
-3. `L5-13 Runbook/Usage Docs`
+1. `L5-10 Reconcile Hold Notification`
+2. `L5-13 Runbook/Usage Docs`
+3. `L5-03 Restore/Backtest Panels`
 
 ## First Recommended Task
-- `L5-09 DR Telegram Integration`
+- `L5-10 Reconcile Hold Notification`
 - 이유:
-  - `L5-07`까지로 dashboard와 tax export 표면이 연결됐다.
-  - 다음은 restore 흐름의 시작/완료/실패를 telegram으로 연결해야 Layer 5의 DR 운영 가시성이 닫힌다.
-  - 이후 reconcile hold 알림과 runbook 문서를 같은 운영 표면으로 정리하기 쉽다.
+  - restore apply는 이제 `dr_restore_started/completed/failed`를 telegram과 system log에 같은 이벤트명으로 남긴다.
+  - 다음은 reconciliation mismatch 복구 흐름의 시작점인 `reconcile_hold` 자동 알림을 연결해야 Layer 5 운영 알림 표면이 거의 닫힌다.
+  - 이후 runbook 문서와 restore/backtest 패널을 같은 운영 용어 체계로 정리하기 쉽다.
