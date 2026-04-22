@@ -491,6 +491,8 @@ Phase 2 기준 canonical 상태는 아래와 같습니다.
     - open orders
     - recent trades
     - reconciliation summary
+    - recent manual restore runs
+    - recent backtest results
     - recent system logs
   - open orders
   - recent trades
@@ -512,6 +514,7 @@ Phase 2 기준 canonical 상태는 아래와 같습니다.
   - `dr_restore_completed`
   - `dr_restore_failed`
   - `fx_alert`
+- `fx_alert`는 notifier 표면만 예약되어 있고, 자동 호출은 환율 임계치, 입력 소스, 시장별 정책이 명시될 때까지 deferred로 둡니다.
 
 ---
 
@@ -574,6 +577,7 @@ Phase 3 운영 기준:
 - Phase 3의 세금 기능은 추산 및 리포트까지로 제한하며, 신고 자동화는 범위 밖으로 둡니다.
 - 현재 저장소 기준 연간 세금 추산은 yearly summary / trade-level report를 JSON 또는 CSV로 export할 수 있습니다.
 - 현재 저장소 기준 dashboard는 `TaxCalculator.calculate_yearly_summary()` 결과를 기반으로 연간 tax summary를 화면에 요약할 수 있습니다.
+- 현재 저장소 기준 tax export는 연간 bundle 외에 `sell_date` calendar month 기준의 `period_summary + trade_report_rows` 월간 출력 포맷을 지원합니다.
 
 ### 6.6 장애 복구 (DR)
 

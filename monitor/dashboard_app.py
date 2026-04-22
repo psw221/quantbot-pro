@@ -55,6 +55,8 @@ def render_dashboard(
     st_module.subheader("Reconciliation")
     st_module.json(_normalize_mapping(snapshot.reconciliation_summary))
 
+    render_restore_backtest_panels(snapshot, st_module=st_module)
+
     st_module.subheader("Recent Logs")
     _render_rows(
         st_module,
@@ -260,6 +262,22 @@ def build_tax_dashboard_summary(
         "total_taxes_krw": float(yearly_summary.get("total_taxes_krw", 0.0)),
         "by_market_rows": by_market_rows,
     }
+
+
+def render_restore_backtest_panels(snapshot: DashboardSnapshot, *, st_module: Any) -> None:
+    st_module.subheader("Recent Manual Restores")
+    _render_rows(
+        st_module,
+        rows=snapshot.recent_manual_restores,
+        empty_message="No recent manual restores",
+    )
+
+    st_module.subheader("Recent Backtests")
+    _render_rows(
+        st_module,
+        rows=snapshot.recent_backtests,
+        empty_message="No recent backtests",
+    )
 
 
 def _render_rows(st_module: Any, *, rows: list[dict[str, Any]], empty_message: str) -> None:

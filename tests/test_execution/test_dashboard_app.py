@@ -141,8 +141,33 @@ def test_render_dashboard_outputs_layer5_skeleton_sections(tmp_path) -> None:
             "latest_started_at": datetime(2026, 4, 21, 13, 10, tzinfo=timezone.utc),
             "latest_run_type": "scheduled_poll",
         },
-        recent_manual_restores=[],
-        recent_backtests=[],
+        recent_manual_restores=[
+            {
+                "reconciliation_run_id": 41,
+                "status": "ok",
+                "mismatch_count": 0,
+                "started_at": datetime(2026, 4, 21, 11, 0, tzinfo=timezone.utc),
+                "completed_at": datetime(2026, 4, 21, 11, 1, tzinfo=timezone.utc),
+                "source_env": "vts",
+            }
+        ],
+        recent_backtests=[
+            {
+                "backtest_result_id": 17,
+                "strategy": "trend_following",
+                "market": "KR",
+                "start_date": datetime(2026, 1, 1, tzinfo=timezone.utc),
+                "end_date": datetime(2026, 4, 1, tzinfo=timezone.utc),
+                "annual_return": 0.12,
+                "sharpe_ratio": 1.3,
+                "max_drawdown": -0.08,
+                "win_rate": 0.56,
+                "total_trades": 24,
+                "profit_factor": 1.4,
+                "notes": "engine=fallback",
+                "created_at": datetime(2026, 4, 20, 10, 0, tzinfo=timezone.utc),
+            }
+        ],
         operational_summary={
             "health_status": "warning",
             "trading_blocked": False,
@@ -188,6 +213,8 @@ def test_render_dashboard_outputs_layer5_skeleton_sections(tmp_path) -> None:
         "Open Orders",
         "Recent Trades",
         "Reconciliation",
+        "Recent Manual Restores",
+        "Recent Backtests",
         "Recent Logs",
     ]
     metrics = [value for kind, value in fake_st.calls if kind == "metric"]
@@ -200,6 +227,43 @@ def test_render_dashboard_outputs_layer5_skeleton_sections(tmp_path) -> None:
     assert any(metric["label"] == "Taxes" and metric["value"] == "1,200 KRW" for metric in metrics)
     assert any(kind == "dataframe" for kind, _ in fake_st.calls)
     assert any(kind == "json" for kind, _ in fake_st.calls)
+
+
+def test_render_dashboard_shows_empty_restore_and_backtest_messages(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    snapshot = DashboardSnapshot(
+        generated_at=datetime(2026, 4, 21, 13, 30, tzinfo=timezone.utc),
+        health=HealthSnapshot(
+            status=RuntimeHealthStatus.NORMAL,
+            trading_blocked=False,
+            scheduler_running=False,
+            writer_queue_running=False,
+            writer_queue_degraded=False,
+            queue_depth=0,
+            token_stale=False,
+            poll_stale=False,
+            last_token_refresh_at=None,
+            last_poll_success_at=None,
+            consecutive_poll_failures=0,
+            last_error=None,
+            details={"status_source": "external_canonical"},
+        ),
+        open_orders=[],
+        recent_trades=[],
+        latest_portfolio_snapshot=None,
+        reconciliation_summary={},
+        recent_manual_restores=[],
+        recent_backtests=[],
+        operational_summary={},
+        recent_logs=[],
+    )
+    fake_st = FakeStreamlit()
+
+    render_dashboard(snapshot, st_module=fake_st, settings=settings, tax_calculator=FakeTaxCalculator())
+
+    info_messages = [value for kind, value in fake_st.calls if kind == "info"]
+    assert "No recent manual restores" in info_messages
+    assert "No recent backtests" in info_messages
 
 
 def test_build_auto_trading_diagnostics_returns_latest_cycle_summary() -> None:
