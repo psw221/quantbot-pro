@@ -396,3 +396,44 @@ def test_build_tax_dashboard_summary_returns_total_and_by_market_rows() -> None:
     assert summary["total_taxes_krw"] == 1200.0
     assert len(summary["by_market_rows"]) == 2
     assert summary["by_market_rows"][0]["market"] == "KR"
+
+
+def test_dashboard_app_prefers_enriched_snapshot_fields(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    snapshot = DashboardSnapshot(
+        generated_at=datetime(2026, 4, 21, 14, 0, tzinfo=timezone.utc),
+        health=HealthSnapshot(
+            status=RuntimeHealthStatus.NORMAL,
+            trading_blocked=False,
+            scheduler_running=False,
+            writer_queue_running=False,
+            writer_queue_degraded=False,
+            queue_depth=0,
+            token_stale=False,
+            poll_stale=False,
+            last_token_refresh_at=None,
+            last_poll_success_at=None,
+            consecutive_poll_failures=0,
+            last_error=None,
+            details={"status_source": "external_canonical"},
+        ),
+        open_orders=[],
+        recent_trades=[],
+        latest_portfolio_snapshot=None,
+        reconciliation_summary={},
+        recent_manual_restores=[],
+        recent_backtests=[],
+        operational_summary={},
+        recent_logs=[],
+        auto_trading_diagnostics={"cycle_status": "completed", "orders_submitted": "1"},
+        strategy_budget_summary={"cash_available_krw": 123.0, "strategy_rows": [], "snapshot_available": False},
+        tax_summary={"year": 2026, "sell_trade_count": 7, "by_market_rows": []},
+    )
+
+    diagnostics = build_auto_trading_diagnostics(snapshot)
+    budget = build_strategy_budget_summary(snapshot, settings=settings)
+    tax_summary = build_tax_dashboard_summary(snapshot, tax_calculator=FakeTaxCalculator())
+
+    assert diagnostics == snapshot.auto_trading_diagnostics
+    assert budget == snapshot.strategy_budget_summary
+    assert tax_summary == snapshot.tax_summary

@@ -4,7 +4,13 @@ from datetime import datetime
 from typing import Any
 
 from core.settings import Settings, get_settings
-from monitor.dashboard import DashboardSnapshot, build_read_only_dashboard_snapshot
+from monitor.dashboard import (
+    DashboardSnapshot,
+    build_read_only_dashboard_snapshot,
+    build_snapshot_auto_trading_diagnostics,
+    build_snapshot_strategy_budget_summary,
+    build_snapshot_tax_summary,
+)
 from tax.tax_calculator import TaxCalculator
 
 
@@ -117,28 +123,7 @@ def render_auto_trading_diagnostics_panel(snapshot: DashboardSnapshot, *, st_mod
 
 
 def build_auto_trading_diagnostics(snapshot: DashboardSnapshot) -> dict[str, Any] | None:
-    for row in snapshot.recent_logs:
-        message = row.get("message")
-        if not isinstance(message, str) or not message.startswith("auto-trading cycle"):
-            continue
-        extra = row.get("extra")
-        extra_fields = extra if isinstance(extra, dict) else {}
-        return {
-            "message": message,
-            "cycle_status": _extract_cycle_status(message),
-            "market": str(extra_fields.get("market") or "n/a"),
-            "signals_generated": _format_metric_value(extra_fields.get("signals_generated")),
-            "signals_resolved": _format_metric_value(extra_fields.get("signals_resolved")),
-            "order_candidate_count": _format_metric_value(extra_fields.get("order_candidate_count")),
-            "rejected_signal_count": _format_metric_value(extra_fields.get("rejected_signal_count")),
-            "orders_submitted": _format_metric_value(extra_fields.get("orders_submitted")),
-            "rejection_reason_summary": str(extra_fields.get("rejection_reason_summary") or "n/a"),
-            "reason": str(extra_fields.get("reason") or "n/a"),
-            "error_message": str(extra_fields.get("error_message") or "n/a"),
-            "submitted_notional_krw": _format_metric_value(extra_fields.get("submitted_notional_krw")),
-            "created_at": _format_value(row.get("created_at")),
-        }
-    return None
+    return snapshot.auto_trading_diagnostics or build_snapshot_auto_trading_diagnostics(snapshot)
 
 
 def render_strategy_budget_panel(snapshot: DashboardSnapshot, *, st_module: Any, settings: Settings) -> None:
@@ -164,40 +149,7 @@ def render_strategy_budget_panel(snapshot: DashboardSnapshot, *, st_module: Any,
 
 
 def build_strategy_budget_summary(snapshot: DashboardSnapshot, *, settings: Settings) -> dict[str, Any]:
-    latest_snapshot = snapshot.latest_portfolio_snapshot or {}
-    cash_available = float(latest_snapshot.get("cash_krw") or 0.0)
-    gross_budget = cash_available * (1 - settings.allocation.cash_buffer)
-    kr_market_budget = gross_budget * settings.allocation.domestic
-    single_stock_cap = cash_available * settings.risk.max_single_stock_domestic
-    cycle_notional_cap = float(settings.auto_trading.max_order_notional_per_cycle)
-    strategy_weights = settings.strategy_weights.model_dump()
-    active_strategies = set(settings.auto_trading.strategies)
-
-    strategy_rows: list[dict[str, Any]] = []
-    for strategy_name, weight in strategy_weights.items():
-        target_notional = kr_market_budget * float(weight)
-        candidate_cap = min(target_notional, single_stock_cap)
-        strategy_rows.append(
-            {
-                "strategy": strategy_name,
-                "active_in_auto_trading": strategy_name in active_strategies,
-                "strategy_weight_pct": round(float(weight) * 100, 2),
-                "target_notional_krw": round(target_notional, 2),
-                "candidate_cap_krw": round(candidate_cap, 2),
-            }
-        )
-
-    return {
-        "snapshot_available": snapshot.latest_portfolio_snapshot is not None,
-        "snapshot_date": None if snapshot.latest_portfolio_snapshot is None else snapshot.latest_portfolio_snapshot.get("snapshot_date"),
-        "cash_available_krw": round(cash_available, 2),
-        "gross_budget_krw": round(gross_budget, 2),
-        "kr_market_budget_krw": round(kr_market_budget, 2),
-        "single_stock_cap_krw": round(single_stock_cap, 2),
-        "cycle_notional_cap_krw": round(cycle_notional_cap, 2),
-        "active_strategy_labels": ", ".join(settings.auto_trading.strategies),
-        "strategy_rows": strategy_rows,
-    }
+    return snapshot.strategy_budget_summary or build_snapshot_strategy_budget_summary(snapshot, settings=settings)
 
 
 def render_tax_dashboard_summary_panel(
@@ -234,34 +186,9 @@ def build_tax_dashboard_summary(
     tax_calculator: TaxCalculator | Any,
     market: str | None = None,
 ) -> dict[str, Any]:
-    tax_year = snapshot.generated_at.year
-    yearly_summary = tax_calculator.calculate_yearly_summary(tax_year, market=market)
-    by_market = yearly_summary.get("by_market") or {}
-    by_market_rows = [
-        {
-            "market": market_code,
-            "sell_trade_count": payload.get("sell_trade_count", 0),
-            "total_quantity": payload.get("total_quantity", 0),
-            "realized_gain_loss_krw": payload.get("realized_gain_loss_krw", 0.0),
-            "taxable_gain_krw": payload.get("taxable_gain_krw", 0.0),
-            "total_fees_krw": payload.get("total_fees_krw", 0.0),
-            "total_taxes_krw": payload.get("total_taxes_krw", 0.0),
-        }
-        for market_code, payload in sorted(by_market.items())
-        if isinstance(payload, dict)
-    ]
-
-    return {
-        "year": int(yearly_summary.get("year", tax_year)),
-        "market": yearly_summary.get("market"),
-        "sell_trade_count": int(yearly_summary.get("sell_trade_count", 0)),
-        "total_quantity": int(yearly_summary.get("total_quantity", 0)),
-        "realized_gain_loss_krw": float(yearly_summary.get("realized_gain_loss_krw", 0.0)),
-        "taxable_gain_krw": float(yearly_summary.get("taxable_gain_krw", 0.0)),
-        "total_fees_krw": float(yearly_summary.get("total_fees_krw", 0.0)),
-        "total_taxes_krw": float(yearly_summary.get("total_taxes_krw", 0.0)),
-        "by_market_rows": by_market_rows,
-    }
+    if snapshot.tax_summary and market in (None, snapshot.tax_summary.get("market")):
+        return snapshot.tax_summary
+    return build_snapshot_tax_summary(snapshot, tax_calculator=tax_calculator, market=market)
 
 
 def render_restore_backtest_panels(snapshot: DashboardSnapshot, *, st_module: Any) -> None:
@@ -319,19 +246,6 @@ def _format_backtest_summary(summary: dict[str, Any]) -> str:
     return f"{strategy} ({market})"
 
 
-def _extract_cycle_status(message: str) -> str:
-    suffix = message.removeprefix("auto-trading cycle").strip()
-    return suffix or "unknown"
-
-
-def _format_metric_value(value: Any) -> str:
-    if isinstance(value, float):
-        return f"{value:.2f}"
-    if value is None:
-        return "n/a"
-    return str(value)
-
-
 def _format_currency(value: float) -> str:
     return f"{value:,.0f} KRW"
 
@@ -341,7 +255,7 @@ def main() -> None:
 
     settings = get_settings()
     st.set_page_config(page_title="QuantBot Pro Dashboard", layout="wide")
-    snapshot = build_read_only_dashboard_snapshot(env=settings.env)
+    snapshot = build_read_only_dashboard_snapshot(env=settings.env, settings=settings)
     render_dashboard(snapshot, st_module=st, settings=settings)
 
 

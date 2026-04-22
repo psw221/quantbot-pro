@@ -199,11 +199,19 @@ def test_dashboard_snapshot_aggregates_runtime_and_recent_db_rows(tmp_path) -> N
     assert snapshot.operational_summary["latest_manual_restore_status"] == "warning"
     assert snapshot.operational_summary["recent_backtest_count"] == 1
     assert snapshot.operational_summary["latest_backtest_strategy"] == "dual_momentum"
+    assert snapshot.auto_trading_diagnostics is None
+    assert snapshot.strategy_budget_summary["snapshot_available"] is True
+    assert snapshot.strategy_budget_summary["cash_available_krw"] == 2000000.0
+    assert snapshot.tax_summary["year"] == 2026
+    assert snapshot.tax_summary["sell_trade_count"] == 0
     assert len(snapshot.recent_logs) == 1
     assert snapshot.recent_logs[0]["extra"] is None
     assert payload["health"]["status"] == snapshot.health.status
     assert payload["health"]["details"]["status_source"] == "external_canonical"
     assert payload["operational_summary"]["latest_reconciliation_run_type"] == "manual_restore"
+    assert payload["strategy_budget_summary"]["cash_available_krw"] == 2000000.0
+    assert payload["tax_summary"]["year"] == 2026
+    assert payload["auto_trading_diagnostics"] is None
 
 
 def test_dashboard_snapshot_handles_empty_read_models(tmp_path) -> None:
@@ -223,6 +231,10 @@ def test_dashboard_snapshot_handles_empty_read_models(tmp_path) -> None:
     assert snapshot.operational_summary["recent_manual_restore_count"] == 0
     assert snapshot.operational_summary["recent_backtest_count"] == 0
     assert snapshot.operational_summary["has_recent_mismatch"] is False
+    assert snapshot.strategy_budget_summary["snapshot_available"] is False
+    assert snapshot.strategy_budget_summary["cash_available_krw"] == 0.0
+    assert snapshot.tax_summary["year"] == 2026
+    assert snapshot.auto_trading_diagnostics is None
     assert snapshot.recent_logs == []
 
 
@@ -282,7 +294,7 @@ def test_read_only_dashboard_snapshot_builds_health_from_db_rows(tmp_path) -> No
         )
         session.commit()
 
-    snapshot = build_read_only_dashboard_snapshot(env="vts", now=reference_now)
+    snapshot = build_read_only_dashboard_snapshot(env="vts", settings=settings, now=reference_now)
 
     assert snapshot.health.details["status_source"] == "external_canonical"
     assert snapshot.health.token_stale is False
@@ -290,3 +302,6 @@ def test_read_only_dashboard_snapshot_builds_health_from_db_rows(tmp_path) -> No
     assert snapshot.health.trading_blocked is False
     assert snapshot.latest_portfolio_snapshot is not None
     assert snapshot.reconciliation_summary["latest_status"] == "ok"
+    assert snapshot.strategy_budget_summary["cash_available_krw"] == 2500000.0
+    assert snapshot.tax_summary["year"] == 2026
+    assert snapshot.auto_trading_diagnostics is None

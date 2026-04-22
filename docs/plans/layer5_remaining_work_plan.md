@@ -4,7 +4,7 @@
 Layer 5 모니터링 및 DR 잔여 작업 계획
 
 ## Status
-- state: in_progress
+- state: done
 - default_env: vts
 - scope_focus: layer5_user_surface
 
@@ -15,13 +15,13 @@ Layer 5 모니터링 및 DR 잔여 작업 계획
 - 완료 기준은 운영자가 코드/DB 직접 조회 없이 Layer 5 정보를 화면, 리포트, 알림으로 확인할 수 있는 상태다.
 
 ## Current State
-- `monitor/dashboard.py`는 Streamlit UI가 아니라 read-only snapshot builder다.
-- `monitor/telegram_bot.py`는 notifier 구현이 완료되었고 runtime, restore, reconcile hold 이벤트 일부가 실제로 연결돼 있다.
+- `monitor/dashboard.py`는 read-only snapshot builder로 유지되며 `auto_trading_diagnostics`, `strategy_budget_summary`, `tax_summary`까지 snapshot에 포함한다.
+- `monitor/telegram_bot.py`는 notifier 구현이 완료되었고 runtime, restore, reconcile hold 이벤트가 실제로 연결돼 있다.
 - `monitor/healthcheck.py`는 external canonical health(`normal`, `warning`, `critical`)를 제공한다.
-- `tax/tax_calculator.py`는 `calculate_yearly_summary()`와 `build_trade_report()`를 제공하지만 출력물 생성/배포 계층은 없다.
+- `tax/tax_calculator.py`는 `calculate_yearly_summary()`와 `build_trade_report()`를 제공하고, `tax/report_export.py`가 연간/월간 출력 계층을 담당한다.
 - `scripts/restore_portfolio.py`는 `dry-run`/`apply`, `manual_restore`, reconciliation 기록과 DR 관련 Telegram 자동 연계까지 구현됐다.
 - `backtest/backtest_runner.py`는 결과 저장과 system log 기록이 가능하고 dashboard snapshot에서 recent backtests를 읽을 수 있다.
-- 따라서 Layer 5는 운영 엔진은 구현됐고, 최종 표면은 부분 구현 상태다.
+- 따라서 Layer 5는 운영 엔진과 사용자-facing 표면이 현재 계획 범위 기준으로 모두 구현된 상태다.
 
 ## Work Breakdown
 | ID | Task | Status | Done Criteria |
@@ -37,7 +37,7 @@ Layer 5 모니터링 및 DR 잔여 작업 계획
 | L5-09 | DR Telegram Integration | done | `restore_portfolio.py`가 `dr_restore_started/completed/failed`를 apply 흐름에서 자동 발송한다 |
 | L5-10 | Reconcile Hold Notification | done | `reconcile_hold` 상태 전환 시 telegram 자동 발송이 연결된다 |
 | L5-11 | FX Alert Wiring Or Defer | done | `fx_alert` 자동 호출은 policy 미정으로 deferred이며, notifier 표면만 유지된다고 문서화한다 |
-| L5-12 | Dashboard Snapshot Enrichment | todo | strategy budget / tax summary / auto-trading diagnostics가 snapshot에 포함된다 |
+| L5-12 | Dashboard Snapshot Enrichment | done | strategy budget / tax summary / auto-trading diagnostics가 snapshot에 포함된다 |
 | L5-13 | Runbook/Usage Docs | done | dashboard 실행, tax export, restore/telegram 해석 방법이 문서화된다 |
 
 ## Implementation Notes
@@ -53,7 +53,7 @@ Layer 5 모니터링 및 DR 잔여 작업 계획
 - `L5-09`는 `restore_portfolio.py`의 apply 흐름에 `dr_restore_started/completed/failed`를 best-effort로 연결하고, `dry-run`은 no-write/no-notify 계약을 유지한다.
 - `L5-10`은 `OrderManager.flag_reconciliation_hold()`에 `reconcile_hold`를 연결하고, 이미 hold 상태면 중복 발송하지 않는다.
 - `L5-11`은 deferred로 마감한다. 현재 `fx_alert`는 notifier 표면만 있고, 임계치·입력 소스·시장별 정책이 없어 자동 호출은 연결하지 않는다.
-- `L5-12`는 dashboard가 별도 계산 없이 snapshot만 렌더링할 수 있도록 read-model을 확장하는 단계다.
+- `L5-12`는 `monitor/dashboard.py`가 `auto_trading_diagnostics`, `strategy_budget_summary`, `tax_summary`를 snapshot 생성 시점에 채우도록 확장한다.
 - `L5-13`은 `docs/layer5_usage_runbook.md`에 dashboard 실행, tax export, restore, telegram 이벤트 해석 절차를 고정한다.
 
 ## Public Interfaces To Add
@@ -85,13 +85,12 @@ python -m compileall monitor tax scripts tests main.py
 - restore telegram integration tests
 
 ## Recommended Start Order
-1. `L5-12 Dashboard Snapshot Enrichment`
-2. `L5-03 Restore/Backtest Panels`
-3. `L5-13 Runbook/Usage Docs`
+1. `Layer 5 종료 검토`
+2. `Phase 4 또는 운영 soak 후속 작업 분리`
+3. `필요 시 Layer 5 polish만 별도 관리`
 
 ## First Recommended Task
-- `L5-12 Dashboard Snapshot Enrichment`
+- `Layer 5 문서/코드 상태 재정리`
 - 이유:
-  - 월간 리포트 출력 포맷은 이제 고정됐고, 남은 Layer 5 공백은 dashboard가 계산 없이 snapshot만으로 주요 운영/세금 요약을 렌더링하는 계약 정리다.
-  - 다음은 snapshot enrichment를 통해 strategy budget, tax summary, auto-trading diagnostics를 snapshot builder 단계로 끌어올리는 순서가 가장 자연스럽다.
-  - 그 뒤에 runbook과 UI 표면을 같은 read-model 계약으로 더 단단하게 맞출 수 있다.
+  - `L5-01`부터 `L5-13`까지 현재 계획 범위는 모두 닫혔다.
+  - 다음은 Layer 5를 별도 구현 단계로 더 확장하기보다, 종료 검토 후 운영 soak 또는 Phase 4/후속 계획으로 넘기는 편이 안전하다.
