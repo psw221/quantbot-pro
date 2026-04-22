@@ -99,7 +99,7 @@ def render_auto_trading_diagnostics_panel(snapshot: DashboardSnapshot, *, st_mod
 
     cards = [
         ("Cycle Status", diagnostics["cycle_status"]),
-        ("Market", diagnostics["market"]),
+        ("Strategy Status", diagnostics["strategy_status_label"]),
         ("Signals", diagnostics["signals_generated"]),
         ("Resolved", diagnostics["signals_resolved"]),
         ("Candidates", diagnostics["order_candidate_count"]),
@@ -111,10 +111,19 @@ def render_auto_trading_diagnostics_panel(snapshot: DashboardSnapshot, *, st_mod
     for index, (label, value) in enumerate(cards):
         columns[index % len(columns)].metric(label=label, value=value)
 
+    strategy_rows = diagnostics.get("strategy_rows")
+    if isinstance(strategy_rows, list) and strategy_rows:
+        st_module.dataframe(_normalize_rows(strategy_rows), use_container_width=True)
+
     st_module.json(
         {
             "message": diagnostics["message"],
             "created_at": diagnostics["created_at"],
+            "market": diagnostics["market"],
+            "strategy_name": diagnostics["strategy_name"],
+            "strategy_cycle_status": diagnostics["strategy_cycle_status"],
+            "strategy_skip_reason": diagnostics["strategy_skip_reason"],
+            "factor_input_available": diagnostics["factor_input_available"],
             "reason": diagnostics["reason"],
             "error_message": diagnostics["error_message"],
             "submitted_notional_krw": diagnostics["submitted_notional_krw"],

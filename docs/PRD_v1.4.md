@@ -375,8 +375,15 @@ Layer 5  모니터링 및 DR
 - polling 예외는 연속 실패 횟수로 관리하고 3회 연속 실패 시 신규 주문을 차단합니다.
 - 장 종료 전 미체결 취소는 국내 `15:25 KST`, 미국 `05:55 KST` 기본값을 사용합니다.
 - 국내 장 종료 전 취소는 브로커 주문번호 외에 주문조직번호(`broker_order_orgno`)까지 저장된 주문만 브로커 취소 대상으로 사용합니다.
+- 현재 저장소 기준 KR scheduled auto-trading은 단일 시장 job이 아니라 전략별 job으로 분리해 실행합니다.
+- KR 전략별 기본 스케줄은 아래를 사용합니다.
+  - `trend_following`: `*/15 9-15 * * 1-5`
+  - `dual_momentum`: `0 9 1 * *`
+  - `factor_investing`: `5 9 1 1,4,7,10 *`
+- 전략별 cron이 명시되지 않은 경우 `auto_trading.kr.schedule_cron`을 fallback으로 사용합니다.
 - Phase 4 KR scheduled auto-trading 기본 가드는 같은 `ticker + strategy` 포지션이 이미 열려 있으면 추가 매수 진입을 금지합니다.
 - 동일 종목의 추가 진입은 명시적 피라미딩 정책이 정의되기 전까지 허용하지 않습니다.
+- factor input source가 준비되지 않은 상태에서도 runtime은 유지하고, `factor_investing` 전략만 `skipped (factor_input_unavailable)` 진단 상태를 남기는 것을 정상 동작으로 취급합니다.
 
 ### 브로커 응답 정규화 계약
 
@@ -503,6 +510,19 @@ Phase 2 기준 canonical 상태는 아래와 같습니다.
   - recent manual restore runs
   - recent backtest results
   - blocked / stale / mismatch 운영 상태 요약
+- 현재 저장소 기준 `auto-trading diagnostics`는 market-level count 외에 strategy-local diagnostics도 함께 노출합니다.
+  - canonical top-level field:
+    - `strategy_name`
+    - `strategy_cycle_status`
+    - `strategy_skip_reason`
+    - `factor_input_available`
+  - dashboard 표면:
+    - `Strategy Status` metric
+    - strategy별 상태 row
+  - 해석 예:
+    - `trend_following: completed`
+    - `factor_investing: skipped (factor_input_unavailable)`
+- `factor_investing: skipped (factor_input_unavailable)`는 factor input loader/source 부재를 의미하며, runtime failure나 broker mismatch로 해석하지 않습니다.
 - Telegram notifier는 상태 판단을 하지 않고, 상위 계층이 확정한 운영 이벤트를 메시지 포맷/송신만 수행합니다.
 - 최소 운영 이벤트 표면:
   - `token_refresh_failure`

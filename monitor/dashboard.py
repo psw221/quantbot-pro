@@ -431,6 +431,8 @@ def build_snapshot_auto_trading_diagnostics(snapshot: DashboardSnapshot) -> dict
             continue
         extra = row.get("extra")
         extra_fields = extra if isinstance(extra, dict) else {}
+        strategy_rows = _build_strategy_status_rows(extra_fields)
+        primary_strategy_row = strategy_rows[0] if strategy_rows else None
         return {
             "message": message,
             "cycle_status": _extract_cycle_status(message),
@@ -444,9 +446,108 @@ def build_snapshot_auto_trading_diagnostics(snapshot: DashboardSnapshot) -> dict
             "reason": str(extra_fields.get("reason") or "n/a"),
             "error_message": str(extra_fields.get("error_message") or "n/a"),
             "submitted_notional_krw": _format_metric_value(extra_fields.get("submitted_notional_krw")),
+            "strategy_name": None if primary_strategy_row is None else primary_strategy_row["strategy_name"],
+            "strategy_cycle_status": None if primary_strategy_row is None else primary_strategy_row["strategy_cycle_status"],
+            "strategy_skip_reason": None if primary_strategy_row is None else primary_strategy_row["strategy_skip_reason"],
+            "factor_input_available": None if primary_strategy_row is None else primary_strategy_row["factor_input_available"],
+            "strategy_status_label": "n/a" if primary_strategy_row is None else primary_strategy_row["strategy_status_label"],
+            "strategy_rows": strategy_rows,
             "strategy_diagnostics": extra_fields.get("strategy_diagnostics") if isinstance(extra_fields.get("strategy_diagnostics"), list) else None,
             "created_at": _format_value(row.get("created_at")),
         }
+    return None
+
+
+def _build_strategy_status_rows(extra_fields: dict[str, Any]) -> list[dict[str, Any]] | None:
+    rows: list[dict[str, Any]] = []
+    seen_strategy_names: set[str] = set()
+
+    primary_row = _build_strategy_status_row_from_scalars(extra_fields)
+    if primary_row is not None:
+        rows.append(primary_row)
+        seen_strategy_names.add(primary_row["strategy_name"])
+
+    strategy_diagnostics = extra_fields.get("strategy_diagnostics")
+    if isinstance(strategy_diagnostics, list):
+        for item in strategy_diagnostics:
+            row = _build_strategy_status_row_from_diagnostic(item)
+            if row is None:
+                continue
+            strategy_name = row["strategy_name"]
+            if strategy_name in seen_strategy_names:
+                continue
+            rows.append(row)
+            seen_strategy_names.add(strategy_name)
+
+    return rows or None
+
+
+def _build_strategy_status_row_from_scalars(extra_fields: dict[str, Any]) -> dict[str, Any] | None:
+    strategy_name = _coerce_optional_string(extra_fields.get("strategy_name"))
+    strategy_cycle_status = _coerce_optional_string(extra_fields.get("strategy_cycle_status"))
+    strategy_skip_reason = _coerce_optional_string(extra_fields.get("strategy_skip_reason"))
+    if strategy_name is None or strategy_cycle_status is None:
+        return None
+    factor_input_available = extra_fields.get("factor_input_available")
+    return _build_strategy_status_row(
+        strategy_name=strategy_name,
+        strategy_cycle_status=strategy_cycle_status,
+        strategy_skip_reason=strategy_skip_reason,
+        factor_input_available=factor_input_available if isinstance(factor_input_available, bool) else None,
+    )
+
+
+def _build_strategy_status_row_from_diagnostic(payload: Any) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    strategy_name = _coerce_optional_string(payload.get("strategy_name"))
+    strategy_cycle_status = _coerce_optional_string(payload.get("status"))
+    strategy_skip_reason = _coerce_optional_string(payload.get("skip_reason"))
+    if strategy_name is None or strategy_cycle_status is None:
+        return None
+    factor_input_available = payload.get("factor_input_available")
+    return _build_strategy_status_row(
+        strategy_name=strategy_name,
+        strategy_cycle_status=strategy_cycle_status,
+        strategy_skip_reason=strategy_skip_reason,
+        factor_input_available=factor_input_available if isinstance(factor_input_available, bool) else None,
+    )
+
+
+def _build_strategy_status_row(
+    *,
+    strategy_name: str,
+    strategy_cycle_status: str,
+    strategy_skip_reason: str | None,
+    factor_input_available: bool | None,
+) -> dict[str, Any]:
+    return {
+        "strategy_name": strategy_name,
+        "strategy_cycle_status": strategy_cycle_status,
+        "strategy_skip_reason": strategy_skip_reason,
+        "factor_input_available": factor_input_available,
+        "strategy_status_label": _format_strategy_status_label(
+            strategy_name=strategy_name,
+            strategy_cycle_status=strategy_cycle_status,
+            strategy_skip_reason=strategy_skip_reason,
+        ),
+    }
+
+
+def _format_strategy_status_label(
+    *,
+    strategy_name: str,
+    strategy_cycle_status: str,
+    strategy_skip_reason: str | None,
+) -> str:
+    if strategy_skip_reason:
+        return f"{strategy_name}: {strategy_cycle_status} ({strategy_skip_reason})"
+    return f"{strategy_name}: {strategy_cycle_status}"
+
+
+def _coerce_optional_string(value: Any) -> str | None:
+    if isinstance(value, str) and value:
+        return value
     return None
 
 

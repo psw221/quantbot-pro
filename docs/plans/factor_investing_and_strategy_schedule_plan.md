@@ -836,14 +836,78 @@
 
 #### Task 4.2 dashboard diagnostics 확장
 
+- 상태:
+  - done
+  - dashboard snapshot diagnostics가 strategy-local status label과 strategy rows를 제공하도록 확장했다.
+  - dashboard app은 `Strategy Status` metric과 strategy rows 표시를 통해 strategy별 상태를 직접 보여주도록 반영했다.
 - 목표:
   - auto-trading diagnostics가 strategy별 상태를 구분해서 보여주도록 한다.
 - 대상:
   - `monitor/dashboard.py`
   - `monitor/dashboard_app.py`
+  - `tests/test_execution/test_dashboard_app.py`
 - 완료 기준:
   - 예: `trend_following: completed`
   - 예: `factor_investing: skipped (factor_input_unavailable)`
+
+세부 계획:
+
+- 범위 경계:
+  - 이번 task는 dashboard snapshot diagnostics와 dashboard app 표시를 strategy-local 상태 기준으로 확장하는 작업이다.
+  - runtime log field 추가는 이미 `Task 4.1`에서 끝났고, 이번 task는 그 canonical scalar를 소비하는 단계다.
+  - 새로운 DB field, streamlit 레이아웃 대개편, PRD/runbook 문구 수정은 이번 task 범위가 아니다.
+- 현재 blocker / mismatch:
+  - `Task 4.1` 이후 runtime log에는 `strategy_name`, `strategy_cycle_status`, `strategy_skip_reason`, `factor_input_available`가 들어가지만, `monitor.dashboard.build_snapshot_auto_trading_diagnostics()`는 아직 이를 읽지 않는다.
+  - `monitor.dashboard_app.render_auto_trading_diagnostics_panel()`도 `Cycle Status`, `Market`, `Signals` 등 market-level 카드만 보여주고 strategy별 상태 표시는 없다.
+  - 그 결과 운영자는 dashboard에서 `trend_following: completed`, `factor_investing: skipped (factor_input_unavailable)` 같은 strategy-local 상태를 즉시 읽기 어렵다.
+- 고정할 diagnostics 계약:
+  - `build_snapshot_auto_trading_diagnostics()`는 기존 필드를 유지하면서 아래 정보를 함께 제공한다.
+    - `strategy_name`
+    - `strategy_cycle_status`
+    - `strategy_skip_reason`
+    - `factor_input_available`
+    - `strategy_status_label`
+    - `strategy_rows`
+  - `strategy_status_label`은 기본적으로 `strategy_name: strategy_cycle_status` 형태를 따르고, skip reason이 있으면 `strategy_name: skipped (reason)` 형태로 만든다.
+  - `strategy_rows`는 strategy별 상태 목록으로 유지하되, 현재 log가 단일 strategy job이면 1행만 가지는 구조를 기본안으로 둔다.
+  - old log compatibility를 위해 top-level scalar가 없으면 nested `strategy_diagnostics`를 fallback으로 해석한다.
+- 구현 단계:
+  - `monitor/dashboard.py`
+    - top-level strategy scalar와 nested `strategy_diagnostics`를 함께 읽어 canonical strategy rows를 만드는 helper를 추가한다.
+    - primary strategy row를 기준으로 `strategy_name`, `strategy_cycle_status`, `strategy_skip_reason`, `factor_input_available`, `strategy_status_label`을 diagnostics dict에 채운다.
+    - 기존 market/count/error fields와 backward compatibility는 유지한다.
+  - `monitor/dashboard_app.py`
+    - Auto-Trading Diagnostics 카드에서 `Market` 대신 `Strategy Status`를 노출하거나, 같은 metric 개수 안에서 strategy-local 상태를 보여주도록 조정한다.
+    - strategy rows가 있으면 dataframe 또는 JSON에 함께 노출해 strategy별 상태를 직접 볼 수 있게 한다.
+    - market, reason, error_message, submitted_notional_krw 등 기존 운영 정보는 detail payload로 유지한다.
+  - 테스트:
+    - `tests/test_execution/test_dashboard_app.py`
+      - top-level strategy scalar가 있는 최신 log에서 `strategy_status_label`과 `strategy_rows`가 올바르게 계산되는지 검증
+      - nested `strategy_diagnostics`만 있는 old log도 fallback으로 같은 요약을 만들 수 있는지 검증
+      - dashboard render가 `Strategy Status` metric에 `trend_following: completed` 또는 `factor_investing: skipped (factor_input_unavailable)`를 노출하는지 검증
+- 완료 기준 구체화:
+  - dashboard diagnostics helper가 strategy-local status label을 반환한다.
+  - dashboard UI가 strategy 상태를 metric 또는 표 형태로 직접 표시한다.
+  - old log payload와 new log payload 모두 diagnostics 요약이 가능하다.
+  - 기존 auto-trading diagnostics의 count/reason/error fields는 유지된다.
+- 비목표:
+  - runtime log schema 추가 변경
+  - dashboard 전반 레이아웃 개편
+  - PRD/runbook 업데이트
+  - 다른 패널의 metric 재설계
+- 구현 결과:
+  - `monitor/dashboard.py`
+    - top-level strategy scalar와 nested `strategy_diagnostics`를 함께 읽어 canonical `strategy_rows`를 만드는 helper를 추가했다.
+    - latest auto-trading diagnostics에 `strategy_name`, `strategy_cycle_status`, `strategy_skip_reason`, `factor_input_available`, `strategy_status_label`, `strategy_rows`를 포함하도록 확장했다.
+    - old log compatibility를 위해 top-level scalar가 없는 경우 nested diagnostics를 fallback으로 해석하도록 반영했다.
+  - `monitor/dashboard_app.py`
+    - Auto-Trading Diagnostics 카드에서 `Market` 대신 `Strategy Status`를 표시하도록 조정했다.
+    - strategy rows가 있으면 dataframe으로 함께 렌더링하고, detail JSON에는 market/strategy scalar/reason/error/notional을 유지하도록 반영했다.
+  - 테스트:
+    - `tests/test_execution/test_dashboard_app.py`에 최신 scalar log 요약, old log fallback, render panel의 `Strategy Status` metric 표시 검증을 추가했다.
+- 검증 결과:
+  - `python -m pytest tests\test_execution\test_dashboard_app.py -q`
+  - `python -m pytest tests\test_strategy tests\test_execution -q`
 
 ### Task 5. 문서 및 검증 동기화
 
@@ -858,6 +922,9 @@
 
 #### Task 5.2 운영 기준 문서 업데이트
 
+- 상태:
+  - done
+  - `docs/PRD_v1.4.md`와 `docs/layer5_usage_runbook.md`에 strategy별 KR 스케줄과 diagnostics 해석 기준을 현재 구현 상태에 맞춰 반영했다.
 - 목표:
   - 전략별 KR 스케줄과 diagnostics 해석 기준을 문서에 반영한다.
 - 대상:
@@ -865,6 +932,22 @@
   - `docs/layer5_usage_runbook.md`
 - 완료 기준:
   - PRD 운영 기준과 runbook 진단 문구가 구현 결과와 맞는다.
+- 구현 결과:
+  - `docs/PRD_v1.4.md`
+    - KR scheduled auto-trading이 전략별 job으로 분리된다는 운영 기본값을 추가했다.
+    - `trend_following`, `dual_momentum`, `factor_investing`의 KR 기본 cron과 fallback 정책을 문서화했다.
+    - dashboard auto-trading diagnostics의 canonical strategy scalar와 `Strategy Status` 해석 예시를 반영했다.
+    - `factor_investing: skipped (factor_input_unavailable)`를 runtime failure가 아닌 strategy-local skip으로 해석하도록 명시했다.
+  - `docs/layer5_usage_runbook.md`
+    - `Auto-Trading Diagnostics` 우선 확인 항목에 `Strategy Status`와 strategy rows를 추가했다.
+    - KR strategy별 기본 스케줄과 fallback 정책을 운영 절차 문서에 정리했다.
+    - `completed`, `skipped (factor_input_unavailable)`, runtime gate skip, `failed` 상태의 해석 기준을 추가했다.
+    - operator quick flow에서 strategy status와 strategy rows를 먼저 보도록 갱신했다.
+- 검증 결과:
+  - 수동 검토:
+    - `Get-Content docs/PRD_v1.4.md`
+    - `Get-Content docs/layer5_usage_runbook.md`
+  - 코드/테스트 재실행은 생략했다. 이번 task는 문서-only 변경으로 런타임 동작을 바꾸지 않았다.
 
 #### Task 5.3 검증 순서 실행
 
@@ -934,10 +1017,10 @@
 
 ## Recommended Next Task
 
-`Task 4.2`, 즉 dashboard diagnostics 확장 작업이다.
+`Task 5.3`, 즉 검증 순서 실행 작업이다.
 
 이유:
 
-- `Task 4.1`로 runtime log의 canonical scalar field가 고정됐기 때문에, 이제 dashboard는 nested diagnostics를 임시 해석하지 않고 strategy별 상태를 안정적으로 요약할 수 있다.
-- 운영자가 바로 보는 표면은 dashboard이므로, 다음 단계는 `trend_following: completed`, `factor_investing: skipped (factor_input_unavailable)` 같은 strategy별 표시를 UI에 연결하는 일이다.
-- 따라서 다음 직접 작업은 `monitor/dashboard.py`와 관련 dashboard 테스트를 확장하는 `Task 4.2`다.
+- 구현과 운영 문서는 이제 strategy별 KR 스케줄과 diagnostics 해석 기준까지 맞춰졌다.
+- 다음 남은 직접 작업은 이를 실제 검증 순서로 고정해 `run-once smoke -> scheduled VTS smoke -> soak`를 체크리스트화하는 일이다.
+- `Task 5.1`은 후속 계획 참조를 연결하는 문서 housekeeping 성격이고, 현재 기능 검증의 직접 blocker는 아니다.

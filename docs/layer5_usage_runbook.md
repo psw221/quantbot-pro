@@ -46,17 +46,54 @@ streamlit run monitor/dashboard_app.py
   - `Writer Queue`
   - `Recent Mismatch`
 - `Auto-Trading Diagnostics`
+  - `Strategy Status`
   - `Cycle Status`
   - `Signals`
   - `Candidates`
   - `Rejected`
   - `Submitted`
   - `Top Rejections`
+  - strategy rows
 - `Strategy Budget`
   - `Cash KRW`
   - `KR Budget`
   - `Single-Stock Cap`
   - `Cycle Cap`
+
+### KR Strategy Schedule Defaults
+- `trend_following`
+  - 기본 cron: `*/15 9-15 * * 1-5`
+  - 장중 추세 전략이므로 session 시간대에 반복 실행된다.
+- `dual_momentum`
+  - 기본 cron: `0 9 1 * *`
+  - 월초 리밸런싱 전략으로 본다.
+- `factor_investing`
+  - 기본 cron: `5 9 1 1,4,7,10 *`
+  - 분기 초 리밸런싱 전략으로 본다.
+- strategy별 cron이 비어 있으면 `auto_trading.kr.schedule_cron` fallback을 사용한다.
+
+### Auto-Trading Diagnostics Interpretation
+- `Strategy Status`
+  - 현재 최신 auto-trading log의 primary strategy 상태를 바로 보여준다.
+  - 예: `trend_following: completed`
+  - 예: `factor_investing: skipped (factor_input_unavailable)`
+- strategy rows
+  - strategy별 `strategy_cycle_status`, `strategy_skip_reason`, `factor_input_available`를 표로 보여준다.
+  - 현재 KR runtime job은 strategy별로 분리돼 있으므로 보통 최신 log 기준 1행만 보인다.
+- 주요 해석 규칙
+  - `completed`
+    - 해당 전략 subset 실행이 정상 종료된 상태다.
+  - `skipped (factor_input_unavailable)`
+    - factor input loader/source가 준비되지 않은 상태다.
+    - runtime failure나 broker mismatch가 아니라 strategy-local skip으로 해석한다.
+  - `skipped (market_closed)`
+    - 시장 세션 밖이므로 실행하지 않은 상태다.
+  - `skipped (trading_blocked|token_stale|polling_stale|writer_queue_degraded|non_vts_environment)`
+    - runtime gate가 전략 실행 전에 cycle을 막은 상태다.
+    - `Operations Summary`, `Health`, telegram 이벤트를 함께 본다.
+  - `failed`
+    - strategy cycle runner 예외가 발생한 상태다.
+    - `Recent Logs`의 `error_message`와 같은 시각대 운영 이벤트를 확인한다.
 
 ## Tax Report Export
 ### JSON Export
@@ -159,7 +196,7 @@ python scripts/restore_portfolio.py --apply --market ALL --snapshot-file <path>
 ## Operator Quick Flow
 1. `streamlit run monitor/dashboard_app.py`
 2. `Operations Summary`에서 blocked/stale/mismatch를 먼저 확인한다.
-3. `Auto-Trading Diagnostics`에서 최근 cycle 결과와 rejection reason을 본다.
+3. `Auto-Trading Diagnostics`에서 `Strategy Status`, strategy rows, rejection reason을 함께 본다.
 4. 복구가 필요하면 `restore_portfolio.py --dry-run`을 먼저 실행한다.
 5. 연간 세후 추산이 필요하면 `scripts/export_tax_report.py`를 사용한다.
 6. telegram 이벤트는 dashboard와 같은 용어(`polling_mismatch`, `reconcile_hold`, `dr_restore_*`)로 해석한다.

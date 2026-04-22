@@ -187,6 +187,10 @@ def test_render_dashboard_outputs_layer5_skeleton_sections(tmp_path) -> None:
                 "message": "auto-trading cycle completed",
                 "extra": {
                     "market": "KR",
+                    "strategy_name": "trend_following",
+                    "strategy_cycle_status": "completed",
+                    "strategy_skip_reason": None,
+                    "factor_input_available": None,
                     "signals_generated": 1,
                     "signals_resolved": 1,
                     "order_candidate_count": 1,
@@ -222,6 +226,7 @@ def test_render_dashboard_outputs_layer5_skeleton_sections(tmp_path) -> None:
     assert any(metric["label"] == "Trading Blocked" and metric["value"] == "No" for metric in metrics)
     assert any(metric["label"] == "Poll Stale" and metric["value"] == "Yes" for metric in metrics)
     assert any(metric["label"] == "Latest Backtest" and metric["value"] == "trend_following (KR)" for metric in metrics)
+    assert any(metric["label"] == "Strategy Status" and metric["value"] == "trend_following: completed" for metric in metrics)
     assert any(metric["label"] == "Top Rejections" and metric["value"] == "existing_position_reentry_blocked:1,no_position_to_sell:1" for metric in metrics)
     assert any(metric["label"] == "Single-Stock Cap" and metric["value"] == "432,594 KRW" for metric in metrics)
     assert any(metric["label"] == "Taxes" and metric["value"] == "1,200 KRW" for metric in metrics)
@@ -300,6 +305,10 @@ def test_build_auto_trading_diagnostics_returns_latest_cycle_summary() -> None:
                 "extra": {
                     "market": "KR",
                     "reason": "trading_blocked",
+                    "strategy_name": "factor_investing",
+                    "strategy_cycle_status": "skipped",
+                    "strategy_skip_reason": "factor_input_unavailable",
+                    "factor_input_available": False,
                     "strategy_diagnostics": [
                         {
                             "strategy_name": "factor_investing",
@@ -320,7 +329,71 @@ def test_build_auto_trading_diagnostics_returns_latest_cycle_summary() -> None:
     assert diagnostics["cycle_status"] == "skipped"
     assert diagnostics["reason"] == "trading_blocked"
     assert diagnostics["orders_submitted"] == "n/a"
+    assert diagnostics["strategy_name"] == "factor_investing"
+    assert diagnostics["strategy_cycle_status"] == "skipped"
+    assert diagnostics["strategy_skip_reason"] == "factor_input_unavailable"
+    assert diagnostics["factor_input_available"] is False
+    assert diagnostics["strategy_status_label"] == "factor_investing: skipped (factor_input_unavailable)"
+    assert diagnostics["strategy_rows"][0]["strategy_status_label"] == "factor_investing: skipped (factor_input_unavailable)"
     assert diagnostics["strategy_diagnostics"][0]["skip_reason"] == "factor_input_unavailable"
+
+
+def test_build_auto_trading_diagnostics_falls_back_to_nested_strategy_diagnostics() -> None:
+    snapshot = DashboardSnapshot(
+        generated_at=datetime(2026, 4, 21, 14, 0, tzinfo=timezone.utc),
+        health=HealthSnapshot(
+            status=RuntimeHealthStatus.NORMAL,
+            trading_blocked=False,
+            scheduler_running=False,
+            writer_queue_running=False,
+            writer_queue_degraded=False,
+            queue_depth=0,
+            token_stale=False,
+            poll_stale=False,
+            last_token_refresh_at=None,
+            last_poll_success_at=None,
+            consecutive_poll_failures=0,
+            last_error=None,
+            details={"status_source": "external_canonical"},
+        ),
+        open_orders=[],
+        recent_trades=[],
+        latest_portfolio_snapshot=None,
+        reconciliation_summary={},
+        recent_manual_restores=[],
+        recent_backtests=[],
+        operational_summary={},
+        recent_logs=[
+            {
+                "log_id": 2,
+                "level": "INFO",
+                "module": "execution.runtime",
+                "message": "auto-trading cycle completed",
+                "extra": {
+                    "market": "KR",
+                    "strategy_diagnostics": [
+                        {
+                            "strategy_name": "trend_following",
+                            "status": "completed",
+                            "skip_reason": None,
+                            "factor_input_available": None,
+                        }
+                    ],
+                },
+                "created_at": datetime(2026, 4, 21, 13, 50, tzinfo=timezone.utc),
+            }
+        ],
+    )
+
+    diagnostics = build_auto_trading_diagnostics(snapshot)
+
+    assert diagnostics is not None
+    assert diagnostics["strategy_name"] == "trend_following"
+    assert diagnostics["strategy_cycle_status"] == "completed"
+    assert diagnostics["strategy_skip_reason"] is None
+    assert diagnostics["factor_input_available"] is None
+    assert diagnostics["strategy_status_label"] == "trend_following: completed"
+    assert diagnostics["strategy_rows"][0]["strategy_name"] == "trend_following"
 
 
 def test_build_strategy_budget_summary_uses_latest_snapshot_cash(tmp_path) -> None:
