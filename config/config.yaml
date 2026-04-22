@@ -45,6 +45,10 @@ auto_trading:
   allow_exits: true
   kr:
     schedule_cron: "*/15 9-15 * * 1-5"
+    strategy_schedule_crons:
+      trend_following: "*/15 9-15 * * 1-5"
+      dual_momentum: "0 9 1 * *"
+      factor_investing: "5 9 1 1,4,7,10 *"
 
 database:
   path: data/quantbot.db

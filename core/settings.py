@@ -170,19 +170,40 @@ class StrategySettings(BaseModel):
     event_filter_enabled: bool = True
 
 
-class AutoTradingMarketSettings(BaseModel):
-    schedule_cron: str = "*/15 9-15 * * 1-5"
-
-    @model_validator(mode="after")
-    def validate_schedule_cron(self) -> "AutoTradingMarketSettings":
-        if len(self.schedule_cron.split()) != 5:
-            raise ConfigurationError("auto_trading market schedule_cron must use standard 5-field cron syntax")
-        return self
-
-
 SUPPORTED_AUTO_TRADING_STRATEGIES = frozenset(
     {"dual_momentum", "trend_following", "factor_investing"}
 )
+
+
+def _validate_standard_cron(value: str, *, field_name: str) -> None:
+    if len(value.split()) != 5:
+        raise ConfigurationError(f"{field_name} must use standard 5-field cron syntax")
+
+
+class AutoTradingMarketSettings(BaseModel):
+    schedule_cron: str = "*/15 9-15 * * 1-5"
+    strategy_schedule_crons: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_schedule_crons(self) -> "AutoTradingMarketSettings":
+        _validate_standard_cron(self.schedule_cron, field_name="auto_trading market schedule_cron")
+
+        unsupported_strategy_names = sorted(set(self.strategy_schedule_crons) - SUPPORTED_AUTO_TRADING_STRATEGIES)
+        if unsupported_strategy_names:
+            raise ConfigurationError(
+                "auto_trading.kr.strategy_schedule_crons supports only "
+                + ", ".join(sorted(SUPPORTED_AUTO_TRADING_STRATEGIES))
+            )
+
+        for strategy_name, cron in self.strategy_schedule_crons.items():
+            _validate_standard_cron(
+                cron,
+                field_name=f"auto_trading.kr.strategy_schedule_crons.{strategy_name}",
+            )
+        return self
+
+    def resolve_schedule_cron(self, strategy_name: str) -> str:
+        return self.strategy_schedule_crons.get(strategy_name, self.schedule_cron)
 
 
 class AutoTradingSettings(BaseModel):

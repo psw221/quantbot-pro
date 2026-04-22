@@ -58,6 +58,11 @@ def build_settings(tmp_path: Path, *, auto_trading: dict | None = None) -> Setti
             "allow_exits": True,
             "kr": {
                 "schedule_cron": "*/15 9-15 * * 1-5",
+                "strategy_schedule_crons": {
+                    "trend_following": "*/15 9-15 * * 1-5",
+                    "dual_momentum": "0 9 1 * *",
+                    "factor_investing": "5 9 1 1,4,7,10 *",
+                },
             },
         },
         "database": {"path": str(tmp_path / "quantbot.db"), "busy_timeout_ms": 5000},
@@ -118,6 +123,30 @@ def test_settings_accept_auto_trading_contract(tmp_path: Path) -> None:
     assert settings.auto_trading.markets == ["KR"]
     assert settings.auto_trading.strategies == ["dual_momentum", "trend_following"]
     assert settings.auto_trading.kr.schedule_cron == "*/15 9-15 * * 1-5"
+    assert settings.auto_trading.kr.strategy_schedule_crons == {
+        "trend_following": "*/15 9-15 * * 1-5",
+        "dual_momentum": "0 9 1 * *",
+        "factor_investing": "5 9 1 1,4,7,10 *",
+    }
+
+
+def test_settings_accept_partial_strategy_specific_kr_crons_with_fallback(tmp_path: Path) -> None:
+    settings = build_settings(
+        tmp_path,
+        auto_trading={
+            "kr": {
+                "strategy_schedule_crons": {
+                    "factor_investing": "10 9 1 1,4,7,10 *",
+                }
+            }
+        },
+    )
+
+    assert settings.auto_trading.kr.strategy_schedule_crons == {
+        "factor_investing": "10 9 1 1,4,7,10 *",
+    }
+    assert settings.auto_trading.kr.resolve_schedule_cron("factor_investing") == "10 9 1 1,4,7,10 *"
+    assert settings.auto_trading.kr.resolve_schedule_cron("trend_following") == "*/15 9-15 * * 1-5"
 
 
 @pytest.mark.parametrize(
@@ -147,6 +176,19 @@ def test_settings_accept_factor_strategy_in_auto_trading_scope(tmp_path: Path, s
 def test_settings_reject_unsupported_auto_trading_scope(tmp_path: Path, auto_trading: dict) -> None:
     with pytest.raises(ConfigurationError):
         build_settings(tmp_path, auto_trading=auto_trading)
+
+
+@pytest.mark.parametrize(
+    ("kr_config"),
+    [
+        {"schedule_cron": "invalid-cron"},
+        {"strategy_schedule_crons": {"trend_following": "invalid-cron"}},
+        {"strategy_schedule_crons": {"unsupported_strategy": "0 9 * * *"}},
+    ],
+)
+def test_settings_reject_invalid_strategy_specific_kr_cron_contract(tmp_path: Path, kr_config: dict) -> None:
+    with pytest.raises(ConfigurationError):
+        build_settings(tmp_path, auto_trading={"kr": kr_config})
 
 
 def test_init_db_applies_wal_mode(tmp_path: Path) -> None:

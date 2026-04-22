@@ -589,6 +589,11 @@
 
 #### Task 3.2 전략별 KR cron 설정 추가
 
+- 상태:
+  - done
+  - `core.settings.AutoTradingMarketSettings`가 전략별 KR cron mapping과 기존 fallback `schedule_cron`을 함께 지원하도록 확장됐다.
+  - `config/config.yaml`에 strategy별 기본 cron 값이 추가됐고, 기존 단일 `schedule_cron`도 fallback으로 유지했다.
+  - runtime job registration은 아직 바뀌지 않았고, 후속 `Task 3.3`이 이 설정 표면을 소비하도록 남겨뒀다.
 - 목표:
   - 기존 단일 KR cron에서 전략별 cron으로 확장한다.
 - 대상:
@@ -597,6 +602,73 @@
 - 완료 기준:
   - `trend_following`, `dual_momentum`, `factor_investing` 각각의 KR cron이 설정 가능하다.
   - 기존 `auto_trading.kr.schedule_cron`은 fallback으로만 유지된다.
+
+세부 계획:
+
+- 범위 경계:
+  - 이번 task는 settings/config 표면만 확장하는 작업이다.
+  - runtime job registration 변경과 실제 전략별 job 분리는 `Task 3.3`에서 다룬다.
+  - 따라서 이번 task만으로 scheduler 등록 결과가 바뀌지는 않는다.
+- 현재 blocker / mismatch:
+  - `core.settings.AutoTradingMarketSettings`는 현재 단일 `schedule_cron` 필드만 가진다.
+  - `config/config.yaml`도 `auto_trading.kr.schedule_cron` 하나만 정의하고 있어 전략별 주기를 표현할 수 없다.
+  - `execution.runtime.TradingRuntime`는 아직 이 단일 필드를 그대로 읽어 KR 단일 cycle job을 등록한다.
+  - `Task 3.1`로 subset 실행 계약은 생겼지만, settings 레벨에서 어떤 전략을 어떤 cron으로 실행할지 기술할 표면이 아직 없다.
+- 고정할 설정 계약:
+  - `auto_trading.kr` 아래에 전략별 cron 필드를 추가한다.
+  - 권장 표면은 `trend_following`, `dual_momentum`, `factor_investing` 각각에 대응하는 명시적 필드다.
+  - 기존 `auto_trading.kr.schedule_cron`은 backward-compatible fallback으로 유지한다.
+  - 각 cron 필드는 표준 5-field cron syntax만 허용해야 한다.
+  - 전략별 cron이 비어 있거나 생략되면 후속 runtime task에서 `schedule_cron` fallback을 사용할 수 있어야 한다.
+- 구조 제안:
+  - 최소안은 `auto_trading.kr.strategy_schedule_crons` 같은 mapping 필드를 추가하는 방식이다.
+  - 대안으로 `auto_trading.kr.trend_following_schedule_cron` 같은 개별 필드도 가능하지만, 전략 수가 늘 때 확장성이 떨어진다.
+  - 이번 task 문서 기본안은 validation과 config readability를 함께 고려해 strategy-name keyed mapping을 우선안으로 둔다.
+- 구현 단계:
+  - `core/settings.py`
+    - `AutoTradingMarketSettings`에 전략별 cron 설정 필드를 추가한다.
+    - 새 필드와 기존 `schedule_cron` 모두 5-field cron validation을 통과하도록 validator를 확장한다.
+    - strategy cron mapping key는 `SUPPORTED_AUTO_TRADING_STRATEGIES`와 정합성을 검증한다.
+  - `config/config.yaml`
+    - 기존 `auto_trading.kr.schedule_cron`은 유지한다.
+    - 전략별 cron 기본값을 문서 추천안에 맞춰 함께 추가한다.
+  - `tests/test_execution/test_bootstrap.py`
+    - 새 전략별 cron 필드가 settings validation을 통과하는지 검증한다.
+    - invalid cron syntax, unsupported strategy key가 reject되는지 검증한다.
+- 기본값 정책:
+  - `trend_following`: `*/15 9-15 * * 1-5`
+  - `dual_momentum`: `0 9 1 * *`
+  - `factor_investing`: `5 9 1 1,4,7,10 *`
+  - 단, `Task 3.3` 전까지 runtime은 여전히 단일 `schedule_cron` fallback을 사용하므로, config에는 전략별 값과 fallback 값을 함께 유지한다.
+- 테스트 계획:
+  - `tests/test_execution/test_bootstrap.py`
+    - strategy cron mapping accepted
+    - invalid cron string rejected
+    - unsupported strategy key rejected
+    - 기존 단일 `schedule_cron` only payload도 계속 허용
+  - broader regression:
+    - `python -m pytest tests\test_execution\test_bootstrap.py -q`
+    - 필요 시 `python -m pytest tests\test_execution -q`
+- 완료 기준 구체화:
+  - settings가 전략별 KR cron 필드를 로드/검증할 수 있다.
+  - 기본 config가 전략별 cron 값을 포함해도 validation을 통과한다.
+  - 기존 단일 `schedule_cron` 구성도 깨지지 않는다.
+  - runtime 변경 없이도 `Task 3.3`이 바로 소비할 수 있는 설정 표면이 마련된다.
+- 비목표:
+  - runtime job id 변경
+  - `TradingRuntime._register_strategy_cycle_jobs()` 수정
+  - `main.py` runner 시그니처 변경
+  - 실제 전략별 job 실행
+- 구현 결과:
+  - `core.settings.AutoTradingMarketSettings`에 `strategy_schedule_crons` mapping 필드를 추가했다.
+  - 기존 `schedule_cron`과 strategy별 cron 항목 모두 5-field cron syntax validation을 통과하도록 validator를 확장했다.
+  - strategy cron mapping key는 `SUPPORTED_AUTO_TRADING_STRATEGIES`와 정합성을 검증하도록 반영했다.
+  - 후속 runtime task가 바로 재사용할 수 있도록 `resolve_schedule_cron(strategy_name)` helper를 추가했다.
+  - `config/config.yaml`에 `trend_following`, `dual_momentum`, `factor_investing` 기본 cron 값을 반영했다.
+  - `tests/test_execution/test_bootstrap.py`에 기본 contract, partial override + fallback, invalid cron, unsupported strategy key 검증을 추가했다.
+- 검증 결과:
+  - `python -m pytest tests\test_execution\test_bootstrap.py -q`
+  - `python -m pytest tests\test_execution -q`
 
 #### Task 3.3 runtime job 분리
 
@@ -721,10 +793,10 @@
 
 ## Recommended Next Task
 
-`Task 3.2`, 즉 전략별 KR cron 설정을 추가하는 작업이다.
+`Task 3.3`, 즉 KR 단일 strategy cycle job을 전략별 job으로 분리하는 작업이다.
 
 이유:
 
-- `Task 3.1`로 `AutoTrader` subset 실행 계약이 생겨 runtime이 전략별 job을 받을 준비는 됐다.
-- 하지만 현재 settings는 여전히 단일 `auto_trading.kr.schedule_cron`만 가지므로, 전략별 job을 등록할 수 있는 설정 표면이 없다.
-- 따라서 다음 직접 blocker는 전략별 KR cron 설정 추가다.
+- `Task 3.1`로 subset 실행 계약이, `Task 3.2`로 전략별 KR cron 설정 표면이 모두 준비됐다.
+- 이제 runtime은 각 전략별 cron을 읽어 별도 job id와 subset 호출로 분리할 수 있는 상태다.
+- 따라서 다음 직접 blocker는 `TradingRuntime`의 실제 job registration 분리다.
