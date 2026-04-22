@@ -7,6 +7,7 @@ from typing import Any
 from core.models import EventFlag, EventType, FactorSnapshot, MarketCode, PriceBar
 from core.settings import Settings, get_settings
 from data.database import EventCalendar, get_read_session
+from strategy.base import StrategyInputAvailability
 
 
 KST = timezone(timedelta(hours=9))
@@ -196,6 +197,18 @@ class KRStrategyDataProvider:
                 continue
             factors[ticker] = _coerce_factor_snapshot(ticker, market, raw_snapshot)
         return factors
+
+    def describe_factor_input_availability(
+        self,
+        market: MarketCode,
+        as_of: datetime,
+    ) -> StrategyInputAvailability:
+        del as_of
+        if market != "KR":
+            return StrategyInputAvailability(available=False, reason="unsupported_market")
+        if self.factor_input_loader is None:
+            return StrategyInputAvailability(available=False, reason="factor_input_unavailable")
+        return StrategyInputAvailability(available=True)
 
     def get_event_flags(
         self,

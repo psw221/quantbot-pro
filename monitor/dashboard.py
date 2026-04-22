@@ -444,6 +444,7 @@ def build_snapshot_auto_trading_diagnostics(snapshot: DashboardSnapshot) -> dict
             "reason": str(extra_fields.get("reason") or "n/a"),
             "error_message": str(extra_fields.get("error_message") or "n/a"),
             "submitted_notional_krw": _format_metric_value(extra_fields.get("submitted_notional_krw")),
+            "strategy_diagnostics": extra_fields.get("strategy_diagnostics") if isinstance(extra_fields.get("strategy_diagnostics"), list) else None,
             "created_at": _format_value(row.get("created_at")),
         }
     return None

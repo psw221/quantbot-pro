@@ -15,7 +15,7 @@ from execution.runtime import TradingRuntime
 from execution.writer_queue import WriterQueue
 from monitor.operations import OperationsRecorder
 from monitor.telegram_bot import TelegramNotifier
-from strategy.data_provider import KRStrategyDataProvider
+from strategy.data_provider import FactorInputLoader, KRStrategyDataProvider
 
 
 def build_strategy_cycle_runner(
@@ -24,6 +24,7 @@ def build_strategy_cycle_runner(
     token_manager: TokenManager | None,
     api_client: KISApiClient | None,
     order_manager: OrderManager | None,
+    factor_input_loader: FactorInputLoader | None = None,
     auto_trader: AutoTrader | None = None,
 ):
     if not settings.auto_trading.enabled:
@@ -55,6 +56,7 @@ def build_strategy_cycle_runner(
     trader = auto_trader or AutoTrader(
         data_provider=KRStrategyDataProvider(
             price_history_loader=price_history_loader,
+            factor_input_loader=factor_input_loader,
             settings=settings,
         ),
         universe_loader=build_default_kr_universe_loader(),

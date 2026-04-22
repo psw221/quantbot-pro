@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from core.models import BrokerOrderResult
 from core.models import PositionSnapshot, PriceBar, Signal
 from data.database import Order, PortfolioSnapshot, Position, Signal as SignalRow, get_session_factory, init_db, utc_now
@@ -10,6 +12,7 @@ from execution.order_manager import OrderManager
 from execution.writer_queue import WriterQueue
 from strategy.base import BaseStrategy
 from strategy.data_provider import KRStrategyDataProvider
+from strategy.factor_investing import FactorInvestingStrategy
 from tests.test_execution.test_bootstrap import build_settings
 
 
@@ -94,6 +97,17 @@ def _kr_bars(ticker: str, closes: list[float]) -> list[PriceBar]:
             )
         )
     return bars
+
+
+def _settings_with_auto_trading_strategies(tmp_path, strategies: list[str]):
+    settings = build_settings(tmp_path, auto_trading={"enabled": True})
+    return settings.model_copy(
+        update={
+            "auto_trading": settings.auto_trading.model_copy(
+                update={"strategies": strategies}
+            )
+        }
+    )
 
 
 def test_auto_trader_builds_dry_candidate_from_resolved_signals_without_writing(tmp_path) -> None:
@@ -217,6 +231,91 @@ def test_auto_trader_rejects_ticker_with_existing_open_order(tmp_path) -> None:
     assert result.order_candidates == []
     assert len(result.rejected_signals) == 1
     assert result.rejected_signals[0].reason == "open_order_exists"
+
+
+def test_auto_trader_skips_factor_strategy_when_factor_input_loader_is_missing(tmp_path) -> None:
+    settings = _settings_with_auto_trading_strategies(tmp_path, ["dual_momentum", "factor_investing"])
+    init_db(settings)
+    session_factory = get_session_factory()
+    as_of = datetime(2026, 4, 1, tzinfo=UTC)
+
+    with session_factory() as session:
+        session.add(
+            PortfolioSnapshot(
+                snapshot_date=as_of - timedelta(days=1),
+                total_value_krw=12000000,
+                cash_krw=3000000,
+                domestic_value_krw=7000000,
+                overseas_value_krw=2000000,
+                usd_krw_rate=1350,
+                daily_return=0.01,
+                cumulative_return=0.10,
+                drawdown=-0.02,
+                max_drawdown=-0.05,
+                position_count=0,
+                created_at=utc_now(),
+            )
+        )
+        session.commit()
+
+    provider = KRStrategyDataProvider(
+        price_history_loader=lambda tickers, requested_as_of, lookback_days: {
+            "005930": _kr_bars("005930", [70000, 70500, 71000]),
+        },
+        settings=settings,
+    )
+    trader = AutoTrader(
+        data_provider=provider,
+        universe_loader=lambda market, timestamp: ["005930"],
+        strategy_builders={
+            "dual_momentum": lambda settings, provider: StubEntryStrategy("dual_momentum"),
+            "factor_investing": lambda settings, provider: StubEntryStrategy("factor_investing"),
+        },
+        settings=settings,
+    )
+
+    result = trader.run_cycle("KR", as_of)
+
+    assert [signal.strategy for signal in result.generated_signals] == ["dual_momentum"]
+    assert len(result.order_candidates) == 1
+    diagnostics = {item.strategy_name: item for item in result.strategy_diagnostics}
+    assert diagnostics["dual_momentum"].status == "completed"
+    assert diagnostics["dual_momentum"].skip_reason is None
+    assert diagnostics["dual_momentum"].factor_input_available is None
+    assert diagnostics["factor_investing"].status == "skipped"
+    assert diagnostics["factor_investing"].skip_reason == "factor_input_unavailable"
+    assert diagnostics["factor_investing"].factor_input_available is False
+
+
+def test_auto_trader_propagates_factor_input_payload_errors(tmp_path) -> None:
+    settings = _settings_with_auto_trading_strategies(tmp_path, ["factor_investing"])
+    provider = KRStrategyDataProvider(
+        factor_input_loader=lambda tickers, market, as_of: {
+            "005930": {
+                "ticker": "000660",
+                "market": market,
+                "value_score": 1.0,
+                "quality_score": 1.0,
+                "momentum_score": 1.0,
+                "low_vol_score": 1.0,
+            }
+        },
+        settings=settings,
+    )
+    trader = AutoTrader(
+        data_provider=provider,
+        universe_loader=lambda market, timestamp: ["005930"],
+        strategy_builders={
+            "factor_investing": lambda settings, provider: FactorInvestingStrategy(
+                settings.strategies.factor_investing,
+                data_provider=provider,
+            )
+        },
+        settings=settings,
+    )
+
+    with pytest.raises(ValueError, match="mismatched ticker"):
+        trader.run_cycle("KR", datetime(2026, 4, 1, tzinfo=UTC))
 
 
 def test_auto_trader_rejects_buy_reentry_when_same_strategy_position_exists(tmp_path) -> None:

@@ -332,6 +332,13 @@ class TradingRuntime:
             if rejection_reason_summary is not None:
                 extra["rejection_reason_summary"] = rejection_reason_summary
 
+        strategy_diagnostics = getattr(result, "strategy_diagnostics", None)
+        if isinstance(strategy_diagnostics, list):
+            extra["strategy_diagnostics"] = [
+                asdict(item) if hasattr(item, "__dataclass_fields__") else item
+                for item in strategy_diagnostics
+            ]
+
         details = getattr(result, "details", None)
         if isinstance(details, dict):
             submitted_order_count = details.get("submitted_order_count")

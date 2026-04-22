@@ -154,6 +154,10 @@
 
 #### Task 1.2 loader 부재 시 skip 규칙 고정
 
+- 상태:
+  - done
+  - loader 부재는 `factor_input_unavailable` strategy-local skip으로 고정했다.
+  - payload mismatch나 loader 예외는 skip이 아니라 hard failure로 남도록 분리했다.
 - 목표:
   - runtime은 기동하되 factor strategy만 안전하게 skip되도록 계약을 고정한다.
 - 대상:
@@ -163,6 +167,71 @@
 - 완료 기준:
   - `factor_input_unavailable` 성격의 skip reason이 단일 규칙으로 정해진다.
   - hard failure와 intentional skip이 구분된다.
+
+세부 계획:
+
+- 범위 경계:
+  - 이번 task는 "loader 부재"만 intentional skip으로 승격한다.
+  - loader payload mismatch, loader 내부 예외, strategy 코드 버그는 계속 hard failure로 남긴다.
+  - `factor_investing` 실제 auto-trading 허용과 settings 확장은 `Task 2.1`에서 다룬다.
+  - strategy별 dashboard rendering과 로그 확장은 본격적으로는 `Task 4` 범위다.
+- 현재 blocker / mismatch:
+  - `main.py`는 아직 factor input loader를 wiring하지 않아 runtime이 loader 부재를 의도된 상태로 표현할 수 없다.
+  - `execution/auto_trader.py`는 전략을 일괄 실행할 뿐 strategy별 skip/diagnostics 표면이 없다.
+  - `execution/runtime.py`와 `monitor/dashboard.py`는 cycle-level summary만 읽기 때문에 strategy별 skip 이유를 아직 직접 노출하지 못한다.
+  - `core/settings.AutoTradingSettings`는 아직 `factor_investing`을 허용하지 않으므로, `Task 1.2` 검증은 injected builder 또는 settings override 기반 테스트로 좁혀야 한다.
+- 고정할 동작 계약:
+  - factor input loader가 없는 상태는 `factor_input_unavailable`이라는 단일 skip reason으로 취급한다.
+  - 이 상태는 cycle failure가 아니라 strategy-local skip이다.
+  - skip된 factor strategy는 buy/sell signal을 생성하지 않는다.
+  - skip 사실은 후속 runtime/log/dashboard 계층이 소비할 수 있도록 structured diagnostics로 남긴다.
+  - 반대로 loader가 존재하지만 payload 검증에 실패하면 skip이 아니라 예외로 남겨야 한다.
+- 구현 단계:
+  - `strategy/data_provider.py`에 factor input availability를 조회하는 최소 표면을 추가한다.
+  - 추천 표면은 boolean + reason을 함께 주는 helper이며, raw loader 존재 여부만 보는 단순 property보다 diagnostics 확장에 유리하다.
+  - `main.py`는 factor input loader 주입 지점을 추가하되, 현재 기본값은 `None`으로 둬 runtime 기동을 유지한다.
+  - `execution/auto_trader.py`의 cycle result에 strategy별 diagnostics container를 추가한다.
+  - diagnostics 최소 필드는 `strategy_name`, `status`, `skip_reason`, `factor_input_available`로 고정한다.
+  - factor strategy 실행 전 availability를 먼저 확인하고, unavailable이면 strategy를 건너뛰고 diagnostics만 기록한다.
+  - dual/trend 전략은 기존과 동일하게 실행하고, factor loader 부재 때문에 함께 skip되면 안 된다.
+  - strategy-local skip은 `generated_signals`, `resolved_signals`, `rejected_signals` 집계와 분리해서 남긴다.
+- 테스트 계획:
+  - `tests/test_execution/test_auto_trader.py`
+    - factor strategy가 활성화된 구성에서 loader 부재 시 cycle이 실패하지 않고 diagnostics에 `factor_input_unavailable`가 남는지 검증한다.
+    - 같은 상황에서 dual/trend 전략은 정상 실행되는지 검증한다.
+    - loader payload 오류는 skip이 아니라 예외 또는 cycle failure로 드러나는지 분리 검증한다.
+  - `tests/test_execution/test_main_wiring.py`
+    - factor loader가 없어도 `build_strategy_cycle_runner()`가 정상 runner를 반환하는지 검증한다.
+    - 추후 loader를 주입할 수 있는 bootstrap hook이 유지되는지 검증한다.
+  - 필요 시 `tests/test_execution/test_runtime.py`
+    - strategy diagnostics가 runtime result에 포함돼도 기존 cycle completed/skipped 로그 계약이 깨지지 않는지 최소 회귀를 확인한다.
+- 비목표:
+  - `factor_investing`을 `auto_trading.strategies` 허용 목록에 추가하는 일
+  - strategy별 cron 분리
+  - dashboard panel의 strategy별 렌더링 완성
+  - factor input source의 실제 구현
+- 구현 결과:
+  - `strategy.base.StrategyDataProvider`에 factor input availability 표면을 추가했다.
+  - `strategy.data_provider.KRStrategyDataProvider`가 loader 부재를 `factor_input_unavailable`로 보고하도록 반영했다.
+  - `execution.auto_trader.AutoTradeCycleResult`에 strategy diagnostics를 추가했다.
+  - `execution.auto_trader.AutoTrader`가 factor strategy 실행 전에 availability를 평가하고 unavailable이면 diagnostics만 남기고 skip하도록 반영했다.
+  - dual/trend 전략은 기존처럼 계속 실행되고 factor loader 부재 때문에 함께 skip되지 않도록 유지했다.
+  - `execution.runtime.py`가 cycle log extra에 `strategy_diagnostics`를 함께 남기도록 확장했다.
+  - `monitor.dashboard.py`가 latest cycle diagnostics에서 `strategy_diagnostics`를 함께 읽을 수 있도록 확장했다.
+  - `main.py`에 optional factor input loader wiring hook을 추가했다.
+- 검증 결과:
+  - `tests/test_execution/test_auto_trader.py`
+    - loader 부재 시 factor strategy skip diagnostics
+    - dual strategy 정상 실행 유지
+    - invalid factor payload는 예외 유지
+  - `tests/test_execution/test_main_wiring.py`
+    - optional factor input loader hook 전달 확인
+  - `tests/test_execution/test_runtime.py`
+    - runtime cycle log에 `strategy_diagnostics` 전달 확인
+  - `tests/test_execution/test_dashboard_app.py`
+    - latest diagnostics가 `strategy_diagnostics`를 유지하는지 확인
+  - broader regression:
+    - `python -m pytest tests\test_strategy tests\test_execution -q`
 
 #### Task 1.3 factor input contract 테스트 추가
 
@@ -354,10 +423,10 @@
 
 ## Recommended Next Task
 
-`Task 1.2`, 즉 loader 부재 시 factor strategy를 hard failure가 아니라 명시적 skip/diagnostics 상태로 남기는 규칙을 고정한다.
+`Task 2.1`, 즉 `factor_investing`을 `auto_trading.strategies` 허용 목록에 추가해 현재 구현된 skip/diagnostics 경로를 실제 설정 표면에 연결한다.
 
 이유:
 
-- `Task 1.1`로 provider 반환 계약과 테스트는 고정됐다.
-- 이제 실제 runtime에서 필요한 다음 blocker는 loader 부재를 운영상 skip으로 처리할지, 오류로 처리할지의 단일 규칙이다.
-- 이 규칙이 고정돼야 `main.py`, `AutoTrader`, diagnostics 표면을 다시 흔들지 않고 연결할 수 있다.
+- `Task 1.2`로 loader 부재와 payload 오류의 처리 경계는 고정됐다.
+- 하지만 현재 `core.settings.AutoTradingSettings`는 여전히 `factor_investing`을 허용하지 않아 실제 설정만으로는 이 경로를 활성화할 수 없다.
+- 따라서 다음 가장 직접적인 blocker는 settings 허용 전략 확장이다.

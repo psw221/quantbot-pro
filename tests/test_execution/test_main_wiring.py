@@ -4,6 +4,7 @@ import sys
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+import main as main_module
 from data.collector import (
     DEFAULT_KR_AUTO_TRADING_UNIVERSE,
     build_default_kr_universe_loader,
@@ -117,6 +118,48 @@ def test_build_strategy_cycle_runner_returns_none_when_auto_trading_disabled(tmp
     )
 
     assert runner is None
+
+
+def test_build_strategy_cycle_runner_wires_optional_factor_input_loader(monkeypatch, tmp_path) -> None:
+    settings = build_settings(tmp_path, auto_trading={"enabled": True})
+    captured = {}
+
+    class DummyTokenManager:
+        def get_valid_token(self, env):
+            assert env == settings.env
+            return "access-token"
+
+    class DummyApiClient:
+        def get_cash_balance(self, access_token):
+            assert access_token == "access-token"
+            return {"output": {"ord_psbl_cash": "1500000"}}
+
+        def normalize_cash_available(self, payload):
+            return float(payload["output"]["ord_psbl_cash"])
+
+    class CapturingAutoTrader:
+        def __init__(self, **kwargs):
+            captured["factor_input_loader"] = kwargs["data_provider"].factor_input_loader
+
+        def execute_cycle(self, market: str, as_of: datetime, *, access_token: str | None = None):
+            return {"market": market, "access_token": access_token}
+
+    monkeypatch.setattr(main_module, "AutoTrader", CapturingAutoTrader)
+    factor_input_loader = lambda tickers, market, as_of: {}
+
+    runner = build_strategy_cycle_runner(
+        settings=settings,
+        token_manager=DummyTokenManager(),
+        api_client=DummyApiClient(),
+        order_manager=object(),
+        factor_input_loader=factor_input_loader,
+    )
+
+    assert runner is not None
+    result = runner("KR", datetime(2026, 4, 20, 9, 15, tzinfo=UTC))
+
+    assert captured["factor_input_loader"] is factor_input_loader
+    assert result == {"market": "KR", "access_token": "access-token"}
 
 
 def test_kis_price_history_loader_prefers_cycle_access_token_provider(tmp_path) -> None:

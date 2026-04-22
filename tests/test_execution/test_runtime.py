@@ -216,6 +216,14 @@ def test_trading_runtime_records_rejection_reason_summary_in_strategy_cycle_log(
             SimpleNamespace(reason="existing_position_reentry_blocked"),
             SimpleNamespace(reason="no_position_to_sell"),
         ],
+        strategy_diagnostics=[
+            {
+                "strategy_name": "factor_investing",
+                "status": "skipped",
+                "skip_reason": "factor_input_unavailable",
+                "factor_input_available": False,
+            }
+        ],
         details={"submitted_order_count": 0, "submitted_notional_krw": 0.0},
     )
     runtime = TradingRuntime(
@@ -235,6 +243,7 @@ def test_trading_runtime_records_rejection_reason_summary_in_strategy_cycle_log(
 
     assert recorder.logs[-1]["message"] == "auto-trading cycle completed"
     assert recorder.logs[-1]["extra"]["rejection_reason_summary"] == "existing_position_reentry_blocked:2,no_position_to_sell:1"
+    assert recorder.logs[-1]["extra"]["strategy_diagnostics"][0]["skip_reason"] == "factor_input_unavailable"
 
 
 def test_trading_runtime_skips_strategy_cycle_when_market_is_closed_and_logs_reason(tmp_path) -> None:

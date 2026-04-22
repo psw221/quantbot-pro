@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
 from core.models import EventFlag, FactorSnapshot, MarketCode, PositionSnapshot, PriceBar, Signal
+
+
+@dataclass(slots=True)
+class StrategyInputAvailability:
+    available: bool
+    reason: str | None = None
 
 
 class StrategyDataProvider(Protocol):
@@ -31,6 +38,13 @@ class StrategyDataProvider(Protocol):
         market: MarketCode,
         as_of: datetime,
     ) -> list[EventFlag]:
+        ...
+
+    def describe_factor_input_availability(
+        self,
+        market: MarketCode,
+        as_of: datetime,
+    ) -> StrategyInputAvailability:
         ...
 
 

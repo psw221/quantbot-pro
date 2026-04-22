@@ -300,6 +300,14 @@ def test_build_auto_trading_diagnostics_returns_latest_cycle_summary() -> None:
                 "extra": {
                     "market": "KR",
                     "reason": "trading_blocked",
+                    "strategy_diagnostics": [
+                        {
+                            "strategy_name": "factor_investing",
+                            "status": "skipped",
+                            "skip_reason": "factor_input_unavailable",
+                            "factor_input_available": False,
+                        }
+                    ],
                 },
                 "created_at": datetime(2026, 4, 21, 13, 45, tzinfo=timezone.utc),
             }
@@ -312,6 +320,7 @@ def test_build_auto_trading_diagnostics_returns_latest_cycle_summary() -> None:
     assert diagnostics["cycle_status"] == "skipped"
     assert diagnostics["reason"] == "trading_blocked"
     assert diagnostics["orders_submitted"] == "n/a"
+    assert diagnostics["strategy_diagnostics"][0]["skip_reason"] == "factor_input_unavailable"
 
 
 def test_build_strategy_budget_summary_uses_latest_snapshot_cash(tmp_path) -> None:

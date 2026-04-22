@@ -12,7 +12,7 @@ from data.database import Order, PortfolioSnapshot, Position, get_read_session
 from execution.order_manager import OrderManager
 from risk.position_sizer import PositionSizer
 from risk.risk_manager import RiskManager
-from strategy.base import BaseStrategy, StrategyDataProvider
+from strategy.base import BaseStrategy, StrategyDataProvider, StrategyInputAvailability
 from strategy.dual_momentum import DualMomentumStrategy
 from strategy.signal_resolver import SignalResolver
 from strategy.trend_following import TrendFollowingStrategy
@@ -105,6 +105,7 @@ class AutoTradeCycleResult:
     order_candidates: list[ResolvedOrderCandidate] = field(default_factory=list)
     rejected_signals: list[AutoTradeSignalRejection] = field(default_factory=list)
     submitted_orders: list[str] = field(default_factory=list)
+    strategy_diagnostics: list["StrategyCycleDiagnostic"] = field(default_factory=list)
     details: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -118,6 +119,14 @@ class AutoTradeCycleResult:
     @property
     def orders_submitted(self) -> int:
         return len(self.submitted_orders)
+
+
+@dataclass(slots=True)
+class StrategyCycleDiagnostic:
+    strategy_name: str
+    status: str
+    skip_reason: str | None = None
+    factor_input_available: bool | None = None
 
 
 class AutoTrader:
@@ -158,16 +167,37 @@ class AutoTrader:
         strategy_instances = self._build_strategy_instances()
 
         generated_signals: list[Signal] = []
+        strategy_diagnostics: list[StrategyCycleDiagnostic] = []
         if universe:
             for strategy_name in self.settings.auto_trading.strategies:
+                diagnostic = self._evaluate_strategy_diagnostic(
+                    strategy_name=strategy_name,
+                    market=normalized_market,
+                    as_of=as_of_utc,
+                )
+                if diagnostic.status == "skipped":
+                    strategy_diagnostics.append(diagnostic)
+                    continue
                 strategy = strategy_instances[strategy_name]
                 generated_signals.extend(strategy.generate_signals(universe, normalized_market, as_of_utc))
+                strategy_diagnostics.append(diagnostic)
+        else:
+            for strategy_name in self.settings.auto_trading.strategies:
+                strategy_diagnostics.append(
+                    self._evaluate_strategy_diagnostic(
+                        strategy_name=strategy_name,
+                        market=normalized_market,
+                        as_of=as_of_utc,
+                    )
+                )
+        skipped_strategies = {item.strategy_name for item in strategy_diagnostics if item.status == "skipped"}
 
         latest_prices, volatilities = self._load_price_context(tickers_for_context, normalized_market, as_of_utc)
         exit_signals, exit_rejections = self._build_exit_signals(
             positions=positions,
             latest_prices=latest_prices,
             strategies=strategy_instances,
+            skipped_strategy_names=skipped_strategies,
         )
         resolved_signals = self.signal_resolver.resolve(generated_signals + exit_signals)
         open_order_tickers = self._load_open_order_tickers(normalized_market)
@@ -182,6 +212,7 @@ class AutoTrader:
             generated_signals=generated_signals + exit_signals,
             resolved_signals=resolved_signals,
             rejected_signals=exit_rejections,
+            strategy_diagnostics=strategy_diagnostics,
             details={
                 "position_tickers": sorted(position_tickers),
                 "open_order_tickers": sorted(open_order_tickers),
@@ -389,6 +420,38 @@ class AutoTrader:
         result.details["submitted_notional_krw"] = submitted_notional
         return result
 
+    def _evaluate_strategy_diagnostic(
+        self,
+        *,
+        strategy_name: str,
+        market: str,
+        as_of: datetime,
+    ) -> StrategyCycleDiagnostic:
+        if strategy_name != "factor_investing":
+            return StrategyCycleDiagnostic(strategy_name=strategy_name, status="completed")
+
+        availability = self._describe_factor_input_availability(market, as_of)
+        if not availability.available:
+            return StrategyCycleDiagnostic(
+                strategy_name=strategy_name,
+                status="skipped",
+                skip_reason=availability.reason or "factor_input_unavailable",
+                factor_input_available=False,
+            )
+        return StrategyCycleDiagnostic(
+            strategy_name=strategy_name,
+            status="completed",
+            factor_input_available=True,
+        )
+
+    def _describe_factor_input_availability(self, market: str, as_of: datetime) -> StrategyInputAvailability:
+        describe_availability = getattr(self.data_provider, "describe_factor_input_availability", None)
+        if callable(describe_availability):
+            availability = describe_availability(market, as_of)
+            if isinstance(availability, StrategyInputAvailability):
+                return availability
+        return StrategyInputAvailability(available=True)
+
     def _build_strategy_instances(self) -> dict[str, BaseStrategy]:
         instances: dict[str, BaseStrategy] = {}
         for strategy_name in self.settings.auto_trading.strategies:
@@ -496,10 +559,13 @@ class AutoTrader:
         positions: dict[tuple[str, str], PositionSnapshot],
         latest_prices: dict[str, float],
         strategies: dict[str, BaseStrategy],
+        skipped_strategy_names: set[str],
     ) -> tuple[list[Signal], list[AutoTradeSignalRejection]]:
         signals: list[Signal] = []
         rejections: list[AutoTradeSignalRejection] = []
         for position in positions.values():
+            if position.strategy in skipped_strategy_names:
+                continue
             strategy = strategies.get(position.strategy)
             if strategy is None:
                 continue
