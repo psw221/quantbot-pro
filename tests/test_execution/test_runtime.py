@@ -208,6 +208,10 @@ def test_trading_runtime_runs_strategy_cycle_runner_when_enabled(tmp_path) -> No
     assert calls == [("KR", now, ["trend_following"])]
     assert recorder.logs[-1]["message"] == "auto-trading cycle completed"
     assert recorder.logs[-1]["extra"]["market"] == "KR"
+    assert recorder.logs[-1]["extra"]["strategy_name"] == "trend_following"
+    assert recorder.logs[-1]["extra"]["strategy_cycle_status"] == "completed"
+    assert recorder.logs[-1]["extra"]["strategy_skip_reason"] is None
+    assert recorder.logs[-1]["extra"]["factor_input_available"] is None
 
 
 def test_trading_runtime_registered_strategy_jobs_forward_requested_subset(tmp_path) -> None:
@@ -282,6 +286,10 @@ def test_trading_runtime_records_rejection_reason_summary_in_strategy_cycle_log(
         runtime.stop()
 
     assert recorder.logs[-1]["message"] == "auto-trading cycle completed"
+    assert recorder.logs[-1]["extra"]["strategy_name"] == "factor_investing"
+    assert recorder.logs[-1]["extra"]["strategy_cycle_status"] == "skipped"
+    assert recorder.logs[-1]["extra"]["strategy_skip_reason"] == "factor_input_unavailable"
+    assert recorder.logs[-1]["extra"]["factor_input_available"] is False
     assert recorder.logs[-1]["extra"]["rejection_reason_summary"] == "existing_position_reentry_blocked:2,no_position_to_sell:1"
     assert recorder.logs[-1]["extra"]["strategy_diagnostics"][0]["skip_reason"] == "factor_input_unavailable"
 
@@ -309,6 +317,10 @@ def test_trading_runtime_skips_strategy_cycle_when_market_is_closed_and_logs_rea
 
     assert calls == []
     assert recorder.logs[-1]["message"] == "auto-trading cycle skipped"
+    assert recorder.logs[-1]["extra"]["strategy_name"] == "trend_following"
+    assert recorder.logs[-1]["extra"]["strategy_cycle_status"] == "skipped"
+    assert recorder.logs[-1]["extra"]["strategy_skip_reason"] == "market_closed"
+    assert recorder.logs[-1]["extra"]["factor_input_available"] is None
     assert recorder.logs[-1]["extra"]["reason"] == "market_closed"
 
 
@@ -454,6 +466,10 @@ def test_trading_runtime_records_strategy_cycle_failure_without_crashing(tmp_pat
 
     assert snapshot_error == "strategy cycle exploded"
     assert recorder.logs[-1]["message"] == "auto-trading cycle failed"
+    assert recorder.logs[-1]["extra"]["strategy_name"] == "trend_following"
+    assert recorder.logs[-1]["extra"]["strategy_cycle_status"] == "failed"
+    assert recorder.logs[-1]["extra"]["strategy_skip_reason"] is None
+    assert recorder.logs[-1]["extra"]["factor_input_available"] is None
     assert recorder.logs[-1]["extra"]["error_type"] == "RuntimeError"
 
 

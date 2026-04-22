@@ -768,12 +768,71 @@
 
 #### Task 4.1 strategy별 cycle log 확장
 
+- 상태:
+  - done
+  - strategy별 runtime cycle log가 top-level scalar `strategy_name`, `strategy_cycle_status`, `strategy_skip_reason`, `factor_input_available`를 공통 계약으로 기록하도록 반영했다.
+  - 기존 nested `strategy_diagnostics` payload는 유지했고, dashboard 소비 변경은 후속 `Task 4.2`로 남겨뒀다.
 - 목표:
   - strategy 단위 결과와 skip reason을 로그에 남긴다.
 - 대상:
-  - `system_logs.extra_json` 작성 경로
+  - `execution/runtime.py`
+  - `tests/test_execution/test_runtime.py`
 - 완료 기준:
   - 최소 필드 `strategy_name`, `strategy_cycle_status`, `strategy_skip_reason`, `factor_input_available`가 기록된다.
+
+세부 계획:
+
+- 범위 경계:
+  - 이번 task는 `system_logs.extra_json` 작성 경로에 strategy-local scalar를 추가하는 작업이다.
+  - dashboard rendering 변경은 `Task 4.2`에서 다룬다.
+  - scheduler 분리, strategy subset 실행 계약, factor loader wiring 변경은 이번 task 범위가 아니다.
+  - 즉 기존 nested `strategy_diagnostics`는 유지하고, 그 위에 canonical top-level scalar만 고정하는 단계로 제한한다.
+- 현재 blocker / mismatch:
+  - `Task 3.3` 이후 runtime job은 전략별로 분리됐지만, cycle log extra는 아직 `market`, `source_env`, count 계열, nested `strategy_diagnostics` 위주라 system log 한 줄만으로 해당 전략 상태를 바로 식별하기 어렵다.
+  - skip/failure log는 strategy subset을 알고 있어도 top-level `strategy_name`과 `strategy_cycle_status`를 남기지 않는다.
+  - completed log도 factor strategy가 실제로는 `skipped (factor_input_unavailable)`였는지 top-level scalar 없이 nested diagnostics를 열어봐야만 알 수 있다.
+- 고정할 로그 계약:
+  - strategy별 runtime job이 남기는 cycle log는 top-level에 아래 필드를 가진다.
+    - `strategy_name`
+    - `strategy_cycle_status`
+    - `strategy_skip_reason`
+    - `factor_input_available`
+  - runtime gate skip(`market_closed`, `trading_blocked`, `token_stale`, `polling_stale`, `writer_queue_degraded`, `non_vts_environment`)는 message를 유지하되 `strategy_cycle_status="skipped"`와 `strategy_skip_reason=<gate reason>`을 함께 남긴다.
+  - runner exception failure는 `strategy_cycle_status="failed"`를 남기고 `strategy_skip_reason`은 `null`로 둔다.
+  - completed log는 기존 message를 유지하되, selected strategy diagnostic이 있으면 그 status/skip_reason/factor_input_available를 top-level scalar로 끌어올린다.
+  - scalar를 만들 수 없는 경우에도 key 자체는 유지하고 `null`로 기록하는 쪽을 기본안으로 둔다.
+- 구현 단계:
+  - `execution/runtime.py`
+    - selected strategy name을 subset 또는 single diagnostic에서 추론하는 helper를 추가한다.
+    - skip/failure/completed 세 경로 모두가 공통 helper로 top-level strategy scalar를 포함하도록 정리한다.
+    - `_build_strategy_cycle_result_extra()`는 기존 count/rejection/`strategy_diagnostics` payload를 유지하면서 scalar 필드를 함께 채운다.
+  - 테스트:
+    - `tests/test_execution/test_runtime.py`
+      - strategy gate skip log에 `strategy_name`, `strategy_cycle_status`, `strategy_skip_reason`, `factor_input_available=null`이 남는지 검증
+      - factor strategy unavailable completed log가 top-level `strategy_cycle_status="skipped"`, `strategy_skip_reason="factor_input_unavailable"`, `factor_input_available=False`를 남기는지 검증
+      - runner failure log가 top-level `strategy_cycle_status="failed"`를 남기는지 검증
+      - trend job completed log가 top-level `strategy_name="trend_following"`, `strategy_cycle_status="completed"`를 남기는지 검증
+- 완료 기준 구체화:
+  - strategy별 KR job log를 nested diagnostics를 열지 않고도 top-level scalar만으로 해석할 수 있다.
+  - 기존 `strategy_diagnostics` payload는 유지되어 backward compatibility를 깨지 않는다.
+  - factor strategy unavailable 상태가 completed message와 별개로 top-level scalar에 `skipped`로 남는다.
+  - skip/failure/completed 세 경로가 모두 같은 field contract를 사용한다.
+- 비목표:
+  - dashboard UI/summary 변경
+  - DB schema 변경
+  - `system_logs.extra_json` 외 다른 테이블 payload 확장
+  - PRD/runbook 문구 반영
+- 구현 결과:
+  - `execution/runtime.py`
+    - skip/failure/completed 세 경로가 모두 공통 helper를 통해 `strategy_name`, `strategy_cycle_status`, `strategy_skip_reason`, `factor_input_available`를 남기도록 반영했다.
+    - completed log는 selected strategy diagnostic이 있으면 그 status/skip_reason/factor_input_available를 top-level scalar로 끌어올리도록 정리했다.
+    - strategy subset이 단일 전략인 경우 subset 우선으로 `strategy_name`을 고정하고, 필요 시 single diagnostic fallback을 사용하도록 구현했다.
+    - 기존 count/rejection summary/`strategy_diagnostics` payload는 그대로 유지했다.
+  - 테스트:
+    - `tests/test_execution/test_runtime.py`에 trend completed, factor unavailable completed, runtime gate skip, runner failure 경로의 scalar contract 검증을 추가했다.
+- 검증 결과:
+  - `python -m pytest tests\test_execution\test_runtime.py -q`
+  - `python -m pytest tests\test_strategy tests\test_execution -q`
 
 #### Task 4.2 dashboard diagnostics 확장
 
@@ -875,10 +934,10 @@
 
 ## Recommended Next Task
 
-`Task 4.1`, 즉 strategy별 cycle log 확장 작업이다.
+`Task 4.2`, 즉 dashboard diagnostics 확장 작업이다.
 
 이유:
 
-- `Task 3.3`로 runtime job이 전략별로 분리됐지만, 현재 cycle log는 여전히 market-level 공통 extra만 남겨 strategy별 상태를 한 줄로 바로 식별하기 어렵다.
-- 후속 dashboard 확장(`Task 4.2`)도 먼저 log/diagnostics 쪽 canonical field가 정해져야 안정적으로 붙일 수 있다.
-- 따라서 다음 직접 작업은 `system_logs.extra_json`에 `strategy_name`, `strategy_cycle_status`, `strategy_skip_reason`, `factor_input_available`를 고정하는 `Task 4.1`이다.
+- `Task 4.1`로 runtime log의 canonical scalar field가 고정됐기 때문에, 이제 dashboard는 nested diagnostics를 임시 해석하지 않고 strategy별 상태를 안정적으로 요약할 수 있다.
+- 운영자가 바로 보는 표면은 dashboard이므로, 다음 단계는 `trend_following: completed`, `factor_investing: skipped (factor_input_unavailable)` 같은 strategy별 표시를 UI에 연결하는 일이다.
+- 따라서 다음 직접 작업은 `monitor/dashboard.py`와 관련 dashboard 테스트를 확장하는 `Task 4.2`다.

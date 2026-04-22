@@ -258,6 +258,11 @@ class TradingRuntime:
                     "market": market,
                     "reason": skip_reason,
                     "source_env": self.settings.env.value,
+                    **self._build_strategy_cycle_log_scalars(
+                        strategies=strategies,
+                        default_status="skipped",
+                        default_skip_reason=skip_reason,
+                    ),
                     **skip_details,
                 },
             )
@@ -277,6 +282,10 @@ class TradingRuntime:
                 extra={
                     "market": market,
                     "source_env": self.settings.env.value,
+                    **self._build_strategy_cycle_log_scalars(
+                        strategies=strategies,
+                        default_status="failed",
+                    ),
                     "error_type": type(exc).__name__,
                     "error_message": str(exc) or "auto_trading_cycle_failed",
                 },
@@ -287,7 +296,7 @@ class TradingRuntime:
             level="INFO",
             message="auto-trading cycle completed",
             created_at=as_of,
-            extra=self._build_strategy_cycle_result_extra(market, result),
+            extra=self._build_strategy_cycle_result_extra(market, result, strategies=strategies),
         )
 
     def _evaluate_strategy_cycle_skip(self, market: str, as_of: datetime) -> tuple[str | None, dict[str, object]]:
@@ -320,10 +329,22 @@ class TradingRuntime:
             return "polling_stale", details
         return None, details
 
-    def _build_strategy_cycle_result_extra(self, market: str, result: object) -> dict[str, object]:
+    def _build_strategy_cycle_result_extra(
+        self,
+        market: str,
+        result: object,
+        *,
+        strategies: list[str] | None = None,
+    ) -> dict[str, object]:
+        strategy_diagnostics = getattr(result, "strategy_diagnostics", None)
         extra: dict[str, object] = {
             "market": market,
             "source_env": self.settings.env.value,
+            **self._build_strategy_cycle_log_scalars(
+                strategies=strategies,
+                strategy_diagnostics=strategy_diagnostics,
+                default_status="completed",
+            ),
         }
         scalar_fields = {
             "signals_generated": getattr(result, "signals_generated", None),
@@ -344,12 +365,8 @@ class TradingRuntime:
             if rejection_reason_summary is not None:
                 extra["rejection_reason_summary"] = rejection_reason_summary
 
-        strategy_diagnostics = getattr(result, "strategy_diagnostics", None)
         if isinstance(strategy_diagnostics, list):
-            extra["strategy_diagnostics"] = [
-                asdict(item) if hasattr(item, "__dataclass_fields__") else item
-                for item in strategy_diagnostics
-            ]
+            extra["strategy_diagnostics"] = self._serialize_strategy_diagnostics(strategy_diagnostics)
 
         details = getattr(result, "details", None)
         if isinstance(details, dict):
@@ -360,6 +377,88 @@ class TradingRuntime:
             if isinstance(submitted_notional, (int, float)):
                 extra["submitted_notional_krw"] = float(submitted_notional)
         return extra
+
+    @classmethod
+    def _build_strategy_cycle_log_scalars(
+        cls,
+        *,
+        strategies: list[str] | None = None,
+        strategy_diagnostics: list[object] | None = None,
+        default_status: str,
+        default_skip_reason: str | None = None,
+    ) -> dict[str, object]:
+        strategy_name = cls._resolve_strategy_cycle_strategy_name(strategies, strategy_diagnostics)
+        selected_diagnostic = cls._select_strategy_diagnostic(strategy_name, strategy_diagnostics)
+        strategy_cycle_status = default_status
+        strategy_skip_reason = default_skip_reason
+        factor_input_available: bool | None = None
+
+        if selected_diagnostic is not None:
+            diagnostic_status = cls._get_strategy_diagnostic_field(selected_diagnostic, "status")
+            if isinstance(diagnostic_status, str) and diagnostic_status:
+                strategy_cycle_status = diagnostic_status
+            diagnostic_skip_reason = cls._get_strategy_diagnostic_field(selected_diagnostic, "skip_reason")
+            if isinstance(diagnostic_skip_reason, str) and diagnostic_skip_reason:
+                strategy_skip_reason = diagnostic_skip_reason
+            diagnostic_factor_input = cls._get_strategy_diagnostic_field(selected_diagnostic, "factor_input_available")
+            if isinstance(diagnostic_factor_input, bool):
+                factor_input_available = diagnostic_factor_input
+
+        return {
+            "strategy_name": strategy_name,
+            "strategy_cycle_status": strategy_cycle_status,
+            "strategy_skip_reason": strategy_skip_reason,
+            "factor_input_available": factor_input_available,
+        }
+
+    @staticmethod
+    def _serialize_strategy_diagnostics(strategy_diagnostics: list[object]) -> list[object]:
+        return [
+            asdict(item) if hasattr(item, "__dataclass_fields__") else item
+            for item in strategy_diagnostics
+        ]
+
+    @classmethod
+    def _resolve_strategy_cycle_strategy_name(
+        cls,
+        strategies: list[str] | None,
+        strategy_diagnostics: list[object] | None,
+    ) -> str | None:
+        if isinstance(strategies, list):
+            strategy_names = [name for name in strategies if isinstance(name, str) and name]
+            if len(strategy_names) == 1:
+                return strategy_names[0]
+
+        if isinstance(strategy_diagnostics, list) and len(strategy_diagnostics) == 1:
+            strategy_name = cls._get_strategy_diagnostic_field(strategy_diagnostics[0], "strategy_name")
+            if isinstance(strategy_name, str) and strategy_name:
+                return strategy_name
+        return None
+
+    @classmethod
+    def _select_strategy_diagnostic(
+        cls,
+        strategy_name: str | None,
+        strategy_diagnostics: list[object] | None,
+    ) -> object | None:
+        if not isinstance(strategy_diagnostics, list) or not strategy_diagnostics:
+            return None
+
+        if strategy_name is not None:
+            for item in strategy_diagnostics:
+                diagnostic_strategy_name = cls._get_strategy_diagnostic_field(item, "strategy_name")
+                if diagnostic_strategy_name == strategy_name:
+                    return item
+
+        if len(strategy_diagnostics) == 1:
+            return strategy_diagnostics[0]
+        return None
+
+    @staticmethod
+    def _get_strategy_diagnostic_field(item: object, field_name: str) -> object | None:
+        if isinstance(item, dict):
+            return item.get(field_name)
+        return getattr(item, field_name, None)
 
     @staticmethod
     def _build_rejection_reason_summary(rejected_signals: list[object]) -> str | None:
