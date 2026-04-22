@@ -120,12 +120,33 @@ def test_settings_accept_auto_trading_contract(tmp_path: Path) -> None:
     assert settings.auto_trading.kr.schedule_cron == "*/15 9-15 * * 1-5"
 
 
-def test_settings_reject_auto_trading_scope_outside_phase4_kr_dual_trend(tmp_path: Path) -> None:
-    with pytest.raises(ConfigurationError):
-        build_settings(tmp_path, auto_trading={"markets": ["US"]})
+@pytest.mark.parametrize(
+    ("strategies"),
+    [
+        ["factor_investing"],
+        ["dual_momentum", "factor_investing"],
+        ["dual_momentum", "trend_following", "factor_investing"],
+    ],
+)
+def test_settings_accept_factor_strategy_in_auto_trading_scope(tmp_path: Path, strategies: list[str]) -> None:
+    settings = build_settings(tmp_path, auto_trading={"strategies": strategies})
 
+    assert settings.auto_trading.strategies == strategies
+
+
+@pytest.mark.parametrize(
+    ("auto_trading"),
+    [
+        {"markets": ["US"]},
+        {"strategies": []},
+        {"strategies": ["dual_momentum", "dual_momentum"]},
+        {"strategies": ["unsupported_strategy"]},
+        {"strategies": ["dual_momentum", "unsupported_strategy"]},
+    ],
+)
+def test_settings_reject_unsupported_auto_trading_scope(tmp_path: Path, auto_trading: dict) -> None:
     with pytest.raises(ConfigurationError):
-        build_settings(tmp_path, auto_trading={"strategies": ["factor_investing"]})
+        build_settings(tmp_path, auto_trading=auto_trading)
 
 
 def test_init_db_applies_wal_mode(tmp_path: Path) -> None:

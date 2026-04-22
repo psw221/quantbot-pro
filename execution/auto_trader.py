@@ -14,6 +14,7 @@ from risk.position_sizer import PositionSizer
 from risk.risk_manager import RiskManager
 from strategy.base import BaseStrategy, StrategyDataProvider, StrategyInputAvailability
 from strategy.dual_momentum import DualMomentumStrategy
+from strategy.factor_investing import FactorInvestingStrategy
 from strategy.signal_resolver import SignalResolver
 from strategy.trend_following import TrendFollowingStrategy
 
@@ -37,6 +38,10 @@ def _default_strategy_builders() -> dict[str, StrategyBuilder]:
     return {
         "dual_momentum": lambda settings, provider: DualMomentumStrategy(
             settings.strategies.dual_momentum,
+            data_provider=provider,
+        ),
+        "factor_investing": lambda settings, provider: FactorInvestingStrategy(
+            settings.strategies.factor_investing,
             data_provider=provider,
         ),
         "trend_following": lambda settings, provider: TrendFollowingStrategy(

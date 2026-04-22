@@ -180,6 +180,11 @@ class AutoTradingMarketSettings(BaseModel):
         return self
 
 
+SUPPORTED_AUTO_TRADING_STRATEGIES = frozenset(
+    {"dual_momentum", "trend_following", "factor_investing"}
+)
+
+
 class AutoTradingSettings(BaseModel):
     enabled: bool = False
     markets: list[str] = Field(default_factory=lambda: ["KR"])
@@ -202,9 +207,9 @@ class AutoTradingSettings(BaseModel):
             raise ConfigurationError("auto_trading.strategies must not be empty")
         if len(set(self.strategies)) != len(self.strategies):
             raise ConfigurationError("auto_trading.strategies must not contain duplicates")
-        if set(self.strategies) - {"dual_momentum", "trend_following"}:
+        if set(self.strategies) - SUPPORTED_AUTO_TRADING_STRATEGIES:
             raise ConfigurationError(
-                "Phase 4 initial auto_trading scope supports only dual_momentum and trend_following"
+                "KR auto_trading scope supports only dual_momentum, trend_following, and factor_investing"
             )
         if self.max_orders_per_cycle < 1:
             raise ConfigurationError("auto_trading.max_orders_per_cycle must be at least 1")

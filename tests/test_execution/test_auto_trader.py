@@ -110,6 +110,24 @@ def _settings_with_auto_trading_strategies(tmp_path, strategies: list[str]):
     )
 
 
+def _factor_snapshot(
+    ticker: str,
+    *,
+    value: float = 0.9,
+    quality: float = 0.8,
+    momentum: float = 0.7,
+    low_vol: float = 0.6,
+) -> FactorSnapshot:
+    return FactorSnapshot(
+        ticker=ticker,
+        market="KR",
+        value_score=value,
+        quality_score=quality,
+        momentum_score=momentum,
+        low_vol_score=low_vol,
+    )
+
+
 def test_auto_trader_builds_dry_candidate_from_resolved_signals_without_writing(tmp_path) -> None:
     settings = build_settings(tmp_path, auto_trading={"enabled": True})
     init_db(settings)
@@ -390,6 +408,124 @@ def test_auto_trader_marks_factor_strategy_available_when_loader_exists(tmp_path
     assert len(result.order_candidates) == 1
 
 
+def test_auto_trader_default_builder_runs_factor_strategy_with_canonical_settings(tmp_path) -> None:
+    settings = build_settings(
+        tmp_path,
+        auto_trading={"enabled": True, "strategies": ["factor_investing"]},
+    )
+    init_db(settings)
+    session_factory = get_session_factory()
+    as_of = datetime(2026, 4, 1, tzinfo=UTC)
+
+    with session_factory() as session:
+        session.add(
+            PortfolioSnapshot(
+                snapshot_date=as_of - timedelta(days=1),
+                total_value_krw=12_000_000,
+                cash_krw=3_000_000,
+                domestic_value_krw=7_000_000,
+                overseas_value_krw=2_000_000,
+                usd_krw_rate=1350,
+                daily_return=0.01,
+                cumulative_return=0.10,
+                drawdown=-0.02,
+                max_drawdown=-0.05,
+                position_count=0,
+                created_at=utc_now(),
+            )
+        )
+        session.commit()
+
+    provider = KRStrategyDataProvider(
+        price_history_loader=lambda tickers, requested_as_of, lookback_days: {
+            "005930": _kr_bars("005930", [70000, 70500, 71000]),
+        },
+        factor_input_loader=lambda tickers, market, requested_as_of: {
+            "005930": _factor_snapshot("005930")
+        },
+        settings=settings,
+    )
+    trader = AutoTrader(
+        data_provider=provider,
+        universe_loader=lambda market, timestamp: ["005930"],
+        settings=settings,
+    )
+
+    result = trader.run_cycle("KR", as_of)
+
+    diagnostics = {item.strategy_name: item for item in result.strategy_diagnostics}
+    assert diagnostics["factor_investing"].status == "completed"
+    assert diagnostics["factor_investing"].skip_reason is None
+    assert diagnostics["factor_investing"].factor_input_available is True
+    assert [signal.strategy for signal in result.generated_signals] == ["factor_investing"]
+    assert len(result.order_candidates) == 1
+    assert result.order_candidates[0].metadata["source_strategies"] == ["factor_investing"]
+
+
+def test_auto_trader_default_builder_blocks_factor_reentry_when_position_exists(tmp_path) -> None:
+    settings = build_settings(
+        tmp_path,
+        auto_trading={"enabled": True, "strategies": ["factor_investing"]},
+    )
+    init_db(settings)
+    session_factory = get_session_factory()
+    as_of = datetime(2026, 4, 1, tzinfo=UTC)
+
+    with session_factory() as session:
+        session.add(
+            Position(
+                ticker="005930",
+                market="KR",
+                strategy="factor_investing",
+                quantity=3,
+                avg_cost=70000,
+                current_price=71000,
+                highest_price=71500,
+                entry_date=as_of - timedelta(days=10),
+                updated_at=utc_now(),
+            )
+        )
+        session.add(
+            PortfolioSnapshot(
+                snapshot_date=as_of - timedelta(days=1),
+                total_value_krw=4_000_000,
+                cash_krw=2_500_000,
+                domestic_value_krw=1_500_000,
+                overseas_value_krw=0,
+                usd_krw_rate=1350,
+                daily_return=0,
+                cumulative_return=0,
+                drawdown=0,
+                max_drawdown=0,
+                position_count=1,
+                created_at=utc_now(),
+            )
+        )
+        session.commit()
+
+    provider = KRStrategyDataProvider(
+        price_history_loader=lambda tickers, requested_as_of, lookback_days: {
+            "005930": _kr_bars("005930", [70000, 70500, 71000]),
+        },
+        factor_input_loader=lambda tickers, market, requested_as_of: {
+            "005930": _factor_snapshot("005930")
+        },
+        settings=settings,
+    )
+    trader = AutoTrader(
+        data_provider=provider,
+        universe_loader=lambda market, timestamp: ["005930"],
+        settings=settings,
+    )
+
+    result = trader.run_cycle("KR", as_of)
+
+    assert result.order_candidates == []
+    assert len(result.rejected_signals) == 1
+    assert result.rejected_signals[0].reason == "existing_position_reentry_blocked"
+    assert result.rejected_signals[0].signal.strategy == "factor_investing"
+
+
 def test_auto_trader_execute_cycle_persists_factor_strategy_order_when_loader_exists(tmp_path) -> None:
     class AcceptedSubmitClient:
         def submit_order(self, payload, access_token=None):
@@ -476,6 +612,84 @@ def test_auto_trader_execute_cycle_persists_factor_strategy_order_when_loader_ex
     assert order.strategy == "factor_investing"
     assert order.status == "submitted"
     assert order.kis_order_no == "20001"
+
+
+def test_auto_trader_default_builder_executes_factor_strategy_with_canonical_settings(tmp_path) -> None:
+    class AcceptedSubmitClient:
+        def submit_order(self, payload, access_token=None):
+            return {"rt_cd": "0", "msg_cd": "APBK0012", "msg1": "ok", "output": {"ODNO": "20002"}}
+
+        def normalize_order_result(self, payload):
+            return BrokerOrderResult(
+                accepted=True,
+                broker_order_no=payload["output"]["ODNO"],
+                broker_order_orgno="06010",
+                raw_payload=payload,
+            )
+
+    settings = build_settings(
+        tmp_path,
+        auto_trading={"enabled": True, "strategies": ["factor_investing"]},
+    )
+    init_db(settings)
+    session_factory = get_session_factory()
+    writer_queue = WriterQueue()
+    writer_queue.start()
+    as_of = datetime(2026, 4, 1, tzinfo=UTC)
+
+    try:
+        with session_factory() as session:
+            session.add(
+                PortfolioSnapshot(
+                    snapshot_date=as_of - timedelta(days=1),
+                    total_value_krw=12_000_000,
+                    cash_krw=3_000_000,
+                    domestic_value_krw=7_000_000,
+                    overseas_value_krw=2_000_000,
+                    usd_krw_rate=1350,
+                    daily_return=0.01,
+                    cumulative_return=0.10,
+                    drawdown=-0.02,
+                    max_drawdown=-0.05,
+                    position_count=0,
+                    created_at=utc_now(),
+                )
+            )
+            session.commit()
+
+        provider = KRStrategyDataProvider(
+            price_history_loader=lambda tickers, requested_as_of, lookback_days: {
+                "005930": _kr_bars("005930", [70000, 70500, 71000]),
+            },
+            factor_input_loader=lambda tickers, market, requested_as_of: {
+                "005930": _factor_snapshot("005930")
+            },
+            settings=settings,
+        )
+        manager = OrderManager(writer_queue=writer_queue, api_client=AcceptedSubmitClient(), settings=settings)
+        trader = AutoTrader(
+            data_provider=provider,
+            universe_loader=lambda market, timestamp: ["005930"],
+            order_manager=manager,
+            settings=settings,
+        )
+
+        result = trader.execute_cycle("KR", as_of)
+    finally:
+        writer_queue.stop()
+
+    diagnostics = {item.strategy_name: item for item in result.strategy_diagnostics}
+    assert diagnostics["factor_investing"].status == "completed"
+    assert diagnostics["factor_investing"].factor_input_available is True
+    assert result.orders_submitted == 1
+    with session_factory() as session:
+        signal_row = session.query(SignalRow).one()
+        order = session.query(Order).one()
+
+    assert signal_row.strategy == "factor_investing"
+    assert order.strategy == "factor_investing"
+    assert order.status == "submitted"
+    assert order.kis_order_no == "20002"
 
 
 def test_auto_trader_skips_factor_exit_evaluation_when_loader_is_missing(tmp_path) -> None:

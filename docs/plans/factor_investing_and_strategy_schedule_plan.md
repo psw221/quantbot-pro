@@ -236,10 +236,9 @@
 #### Task 1.3 factor input contract 테스트 추가
 
 - 상태:
-  - partial
-  - `Task 1.1`, `Task 1.2`에서 provider contract, skip diagnostics, payload error 경로의 핵심 테스트는 이미 반영됐다.
-  - `Task 1.3`에서는 injected settings/builder 기준으로 factor loader available 성공 경로, `execute_cycle()` persistence 경로, factor exit skip 동작까지 추가로 고정했다.
-  - 남은 범위는 실제 settings/default builder 경로가 열렸을 때의 canonical regression matrix를 채우는 일이다.
+  - done
+  - `Task 1.1`, `Task 1.2`, `Task 2.1`, `Task 2.2` 결과를 기준으로 provider contract, skip diagnostics, canonical settings/default builder regression까지 마감했다.
+  - injected builder 우회 경로뿐 아니라 실제 settings/default builder 경로에서 factor strategy run/execute/reentry block 동작을 고정했다.
 - 목표:
   - input 존재/부재 모두 재현 가능한 테스트를 먼저 만든다.
 - 대상:
@@ -273,11 +272,11 @@
     - optional factor input loader hook 전달
   - `tests/test_execution/test_runtime.py`, `tests/test_execution/test_dashboard_app.py`
     - runtime log / dashboard diagnostics에 `strategy_diagnostics` 전달
-- 남은 blocker / 테스트 공백:
-  - 현재 `core.settings.AutoTradingSettings`가 `factor_investing`을 허용하지 않아 canonical settings 기반 테스트가 아직 없다.
-  - 현재 `execution.auto_trader._default_strategy_builders()`가 factor strategy를 포함하지 않아 default builder 경로의 통합 테스트가 아직 없다.
-  - factor input이 "있을 때" `strategy_diagnostics.factor_input_available=True`가 default auto-trading 경로에서 남는지 아직 직접 검증하지 않았다.
-  - 실제 default builder + canonical settings 경로에서 factor strategy가 `execute_cycle()` order persistence/submission 경로를 타는 테스트는 아직 없다.
+- 해소된 blocker / 추가 반영:
+  - `core.settings.AutoTradingSettings`가 이제 `factor_investing`을 허용해 canonical settings 기반 테스트를 직접 작성할 수 있다.
+  - `execution.auto_trader._default_strategy_builders()`가 factor strategy를 포함해 injected builder 우회가 더 이상 필요하지 않다.
+  - factor input이 있을 때 `strategy_diagnostics.factor_input_available=True`가 default auto-trading 경로에서도 남는지 검증했다.
+  - 실제 default builder + canonical settings 경로에서 factor strategy가 `execute_cycle()` order persistence/submission 경로를 타는 테스트를 추가했다.
 - 고정할 테스트 매트릭스:
   - provider contract:
     - loader 없음
@@ -296,12 +295,12 @@
   - diagnostics propagation:
     - runtime log extra에 strategy diagnostics 포함
     - dashboard latest diagnostics에 strategy diagnostics 유지
-- 구현 순서:
-  - `Task 2.1` 완료 후 `tests/test_execution/test_bootstrap.py`에서 `auto_trading.strategies=["factor_investing"]` 허용 케이스를 추가한다.
-  - `Task 2.2` 완료 후 `tests/test_execution/test_auto_trader.py`에서 injected builder 우회 없이 default builder 경로를 검증한다.
-  - factor loader가 실제로 주입된 상태에서 `run_cycle()`과 `execute_cycle()` 각각의 성공 경로를 분리 검증한다.
-  - no-loader / invalid-payload / valid-loader 세 경로를 같은 테스트 묶음에서 비교 가능하게 유지한다.
-  - factor position existing + loader unavailable 시 exit path가 skip되는지, 또는 정책 변경이 있으면 그에 맞게 명시적으로 테스트를 고정한다.
+- 구현 결과:
+  - `tests/test_execution/test_bootstrap.py`에서 `auto_trading.strategies=["factor_investing"]` 허용 케이스와 unsupported/duplicate/empty reject 케이스를 새 허용 집합 기준으로 정리했다.
+  - `tests/test_execution/test_auto_trader.py`에서 injected builder 없이 default builder 경로를 직접 검증하도록 추가 테스트를 반영했다.
+  - factor loader가 실제로 주입된 상태에서 `run_cycle()`과 `execute_cycle()` 각각의 성공 경로를 분리 검증했다.
+  - no-loader / invalid-payload / valid-loader 세 경로를 같은 테스트 묶음에서 계속 비교 가능하게 유지했다.
+  - factor position existing + loader unavailable 시 exit skip, existing factor position + loader available 시 reentry block 동작을 각각 고정했다.
 - 완료 기준 구체화:
   - `build_settings(..., auto_trading={"strategies": ["factor_investing"]})`가 허용된다.
   - default `AutoTrader` strategy builder가 factor strategy를 포함한 상태에서 관련 테스트가 통과한다.
@@ -309,6 +308,7 @@
   - factor loader 부재 시 `strategy_diagnostics`에 `status=skipped`, `skip_reason=factor_input_unavailable`가 남는다.
   - invalid factor payload는 skip으로 삼켜지지 않고 실패로 남는다.
 - 현재까지의 검증:
+  - `python -m pytest tests\test_execution\test_bootstrap.py -q`
   - `python -m pytest tests\test_execution\test_auto_trader.py -q`
   - `python -m pytest tests\test_strategy tests\test_execution -q`
 - 비목표:
@@ -320,6 +320,11 @@
 
 #### Task 2.1 settings 허용 전략 확장
 
+- 상태:
+  - done
+  - `core.settings.AutoTradingSettings` validator가 `factor_investing`을 허용하도록 확장됐다.
+  - `tests/test_execution/test_bootstrap.py`가 factor 허용 / unsupported reject / duplicate reject / empty reject 계약으로 갱신됐다.
+  - `config/config.yaml`의 기본 활성 전략 목록은 `[dual_momentum, trend_following]`로 유지해 loader 부재 기본 런타임의 전략 skip 노이즈를 늘리지 않았다.
 - 목표:
   - `factor_investing`을 auto-trading 허용 전략으로 추가한다.
 - 대상:
@@ -329,8 +334,65 @@
   - `auto_trading.strategies=["factor_investing"]`가 validation을 통과한다.
   - 1차 범위가 `KR only`라는 제약은 유지된다.
 
+세부 계획:
+
+- 범위 경계:
+  - 이번 task는 settings validator와 config contract를 여는 작업이다.
+  - `AutoTrader` 기본 builder에 factor strategy를 추가하는 일은 `Task 2.2`에서 다룬다.
+  - `main.py` bootstrap에서 실제 factor loader를 연결하는 일은 `Task 2.3`에서 다룬다.
+  - 따라서 이번 task만으로 기본 auto-trading 실행 경로가 factor strategy를 즉시 실행 가능해지는 것은 아니다.
+- 현재 blocker / mismatch:
+  - `core.settings.AutoTradingSettings.validate_supported_scope()`는 아직 `factor_investing`을 불허한다.
+  - `tests/test_execution/test_bootstrap.py`도 현재는 `auto_trading.strategies=["factor_investing"]`를 reject하는 기준을 고정하고 있다.
+  - `config/config.yaml`은 전략 weights와 strategy config에는 이미 `factor_investing`이 존재하지만, `auto_trading.strategies`에는 포함되지 않아 설정 표면이 분리돼 있다.
+  - 현재 `config/config.yaml`의 `auto_trading.enabled`가 `true`이므로, `Task 2.2` 전에 기본 활성 전략 목록까지 바로 바꾸면 default builder와 충돌할 수 있다.
+- 고정할 설정 계약:
+  - 허용 전략 집합은 `{"dual_momentum", "trend_following", "factor_investing"}`로 확장한다.
+  - `markets == ["KR"]` 제약은 그대로 유지한다.
+  - 중복 전략 금지, empty 전략 금지, max order/max notional 검증은 그대로 유지한다.
+  - `factor_investing` 단독 구성과 혼합 구성은 validation을 통과해야 한다.
+  - 미지원 전략 문자열은 계속 reject해야 한다.
+- config 기본값 정책:
+  - 이번 task에서는 `config/config.yaml`의 기본 `auto_trading.strategies`를 즉시 `factor_investing` 포함으로 바꾸지 않는 안을 기본안으로 둔다.
+  - 이유:
+    - `Task 2.2` 전에는 default strategy builder가 factor strategy를 아직 생성하지 못한다.
+    - 현재 `auto_trading.enabled=true` 기본값과 결합되면 설정은 통과하지만 runtime에서 unsupported strategy failure가 날 수 있다.
+  - 대신 `config/config.yaml`은 "허용 가능하지만 기본 활성은 아직 dual/trend 유지" 상태를 유지하고, 이 판단을 문서에 명시한다.
+  - 만약 같은 작업에서 default builder까지 함께 열리면 그때 기본 활성 전략 목록 변경 여부를 다시 판단한다.
+- 구현 단계:
+  - `core/settings.py`
+    - `validate_supported_scope()`의 허용 전략 집합에 `factor_investing`을 추가한다.
+    - reject message도 새 허용 집합에 맞게 갱신한다.
+  - `tests/test_execution/test_bootstrap.py`
+    - 기존 accept contract 테스트에 `factor_investing` 허용 케이스를 추가한다.
+    - 기존 reject 테스트는 US market, duplicate, empty, truly unsupported strategy 중심으로 재정리한다.
+    - 기존 `factor_investing` reject 기대는 제거한다.
+  - `config/config.yaml`
+    - 기본 `auto_trading.strategies`는 우선 `[dual_momentum, trend_following]` 유지 여부를 명시적으로 확인한다.
+    - 필요하면 주석/문서 수준 설명 대신 계획 문서에서 이 의도를 고정하고, config 값 자체는 보수적으로 유지한다.
+- 테스트 계획:
+  - `tests/test_execution/test_bootstrap.py`
+    - `build_settings(..., auto_trading={"strategies": ["factor_investing"]})` 허용
+    - `build_settings(..., auto_trading={"strategies": ["dual_momentum", "factor_investing"]})` 허용
+    - `build_settings(..., auto_trading={"strategies": ["unsupported_strategy"]})` reject
+    - duplicate strategy / empty strategy / non-KR market reject 유지
+  - broader regression:
+    - settings validation 관련 실행 경로가 깨지지 않도록 `tests/test_execution` 범위 회귀 확인
+- 완료 기준 구체화:
+  - validator가 `factor_investing`을 허용한다.
+  - bootstrap 테스트가 새 허용 집합을 기준으로 통과한다.
+  - 기본 config는 `Task 2.2` 전 runtime failure를 만들지 않도록 보수적 상태를 유지하거나, 변경 시 동일 task 안에서 안전성이 입증된다.
+- 비목표:
+  - factor strategy 기본 builder 등록
+  - factor input loader 실제 연결
+  - strategy별 cron 분리
+
 #### Task 2.2 AutoTrader 기본 strategy builder 확장
 
+- 상태:
+  - done
+  - `execution.auto_trader._default_strategy_builders()`가 `FactorInvestingStrategy`를 포함한다.
+  - canonical settings/default builder 기준 `run_cycle()`, `execute_cycle()`, 동일 `ticker + strategy` 재진입 차단 회귀를 추가했다.
 - 목표:
   - factor strategy를 기존 주문 파이프라인에 연결한다.
 - 대상:
@@ -338,6 +400,27 @@
 - 완료 기준:
   - `factor_investing`이 `signal_resolver -> risk_manager -> position_sizer -> order_manager` 경로를 그대로 사용한다.
   - 동일 `ticker + strategy` 재진입 금지 규칙이 factor strategy에도 그대로 적용된다.
+
+세부 계획:
+
+- 범위 경계:
+  - 이번 task는 `AutoTrader` 기본 builder 연결까지만 담당한다.
+  - `main.py`에서 실제 factor input loader를 조립하는 bootstrap wiring은 `Task 2.3`로 남긴다.
+  - `config/config.yaml` 기본 활성 전략 목록은 이번 task에서도 보수적으로 유지한다.
+- 해결된 blocker / 구현 결과:
+  - `execution.auto_trader._default_strategy_builders()`에 `factor_investing -> FactorInvestingStrategy(settings.strategies.factor_investing, data_provider=provider)`를 추가했다.
+  - injected builder 없이 canonical settings 경로에서 factor strategy instance가 생성되도록 열었다.
+  - factor strategy도 기존 `signal_resolver -> risk_manager -> position_sizer -> order_manager` 경로를 그대로 사용하도록 유지했다.
+  - 동일 `ticker + strategy` 재진입 금지 규칙이 factor strategy에도 그대로 적용되는지 default builder 기준 테스트로 고정했다.
+- 테스트 반영:
+  - `tests/test_execution/test_auto_trader.py`
+    - default builder + factor loader present -> `run_cycle()` 성공
+    - default builder + existing factor position -> reentry blocked
+    - default builder + factor loader present -> `execute_cycle()` signal/order persistence 및 broker submission
+- 비목표:
+  - factor input source 구현 자체
+  - `main.py` bootstrap에서 factor loader를 실제로 연결하는 일
+  - `config/config.yaml` 기본 활성 전략 변경
 
 #### Task 2.3 bootstrap wiring 추가
 
@@ -495,10 +578,10 @@
 
 ## Recommended Next Task
 
-`Task 2.1`, 즉 `factor_investing`을 `auto_trading.strategies` 허용 목록에 추가해 현재 구현된 skip/diagnostics 경로를 실제 설정 표면에 연결한다.
+`Task 2.3`, 즉 `main.py` bootstrap에서 factor input loader를 실제로 주입하는 작업이다.
 
 이유:
 
-- `Task 1.2`로 loader 부재와 payload 오류의 처리 경계는 고정됐다.
-- 하지만 현재 `core.settings.AutoTradingSettings`는 여전히 `factor_investing`을 허용하지 않아 실제 설정만으로는 이 경로를 활성화할 수 없다.
-- 따라서 다음 가장 직접적인 blocker는 settings 허용 전략 확장이다.
+- `Task 2.1`, `Task 2.2`로 canonical settings와 default builder 경로는 모두 열렸다.
+- 하지만 현재 기본 bootstrap은 factor input loader를 조립하지 않으므로 실제 런타임에서는 `factor_investing`이 계속 `factor_input_unavailable`로만 남는다.
+- 따라서 다음 가장 직접적인 blocker는 bootstrap wiring이다.
