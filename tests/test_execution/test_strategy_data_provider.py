@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
+
+from core.models import FactorSnapshot
 from data.database import EventCalendar, get_session_factory, init_db, utc_now
 from strategy.data_provider import KRStrategyDataProvider
 from tests.test_execution.test_bootstrap import build_settings
@@ -164,9 +167,84 @@ def test_kr_strategy_data_provider_reads_same_day_event_flags_from_event_calenda
     assert flags[1].metadata["title"] == "Samsung earnings"
 
 
-def test_kr_strategy_data_provider_returns_empty_factor_inputs_for_phase4_scope(tmp_path) -> None:
+def test_kr_strategy_data_provider_returns_empty_factor_inputs_without_loader(tmp_path) -> None:
     provider = KRStrategyDataProvider(settings=build_settings(tmp_path))
 
     factors = provider.get_factor_inputs(["005930"], "KR", datetime(2026, 4, 20, tzinfo=UTC))
 
     assert factors == {}
+
+
+def test_kr_strategy_data_provider_normalizes_factor_inputs_from_loader(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    as_of = datetime(2026, 4, 20, 15, 0, tzinfo=UTC)
+
+    def loader(tickers, market, requested_as_of):
+        assert tickers == ["005930", "000660"]
+        assert market == "KR"
+        assert requested_as_of == as_of
+        return {
+            "005930": {
+                "value_score": 1,
+                "quality_score": "2.5",
+                "momentum_score": 3.0,
+                "low_vol_score": 4,
+            },
+            "000660": FactorSnapshot(
+                ticker="000660",
+                market="KR",
+                value_score=0.5,
+                quality_score=0.6,
+                momentum_score=0.7,
+                low_vol_score=0.8,
+            ),
+            "035420": FactorSnapshot(
+                ticker="035420",
+                market="KR",
+                value_score=9.0,
+                quality_score=9.0,
+                momentum_score=9.0,
+                low_vol_score=9.0,
+            ),
+        }
+
+    provider = KRStrategyDataProvider(factor_input_loader=loader, settings=settings)
+
+    factors = provider.get_factor_inputs(["005930", "005930", "000660"], "KR", as_of)
+
+    assert list(factors) == ["005930", "000660"]
+    assert factors["005930"] == FactorSnapshot(
+        ticker="005930",
+        market="KR",
+        value_score=1.0,
+        quality_score=2.5,
+        momentum_score=3.0,
+        low_vol_score=4.0,
+    )
+    assert factors["000660"] == FactorSnapshot(
+        ticker="000660",
+        market="KR",
+        value_score=0.5,
+        quality_score=0.6,
+        momentum_score=0.7,
+        low_vol_score=0.8,
+    )
+
+
+def test_kr_strategy_data_provider_rejects_mismatched_factor_input_payload(tmp_path) -> None:
+    provider = KRStrategyDataProvider(
+        factor_input_loader=lambda tickers, market, as_of: {
+            "005930": {
+                "ticker": "000660",
+                "market": market,
+                "value_score": 1.0,
+                "quality_score": 1.0,
+                "momentum_score": 1.0,
+                "low_vol_score": 1.0,
+            }
+        },
+        settings=build_settings(tmp_path),
+    )
+
+    with pytest.raises(ValueError, match="mismatched ticker"):
+        provider.get_factor_inputs(["005930"], "KR", datetime(2026, 4, 20, tzinfo=UTC))

@@ -12,6 +12,7 @@ from data.database import EventCalendar, get_read_session
 KST = timezone(timedelta(hours=9))
 
 PriceHistoryLoader = Callable[[list[str], datetime, int], Mapping[str, Sequence[PriceBar | Mapping[str, Any]]]]
+FactorInputLoader = Callable[[list[str], MarketCode, datetime], Mapping[str, FactorSnapshot | Mapping[str, Any]]]
 
 
 def _coerce_utc(value: datetime) -> datetime:
@@ -56,6 +57,52 @@ def _coerce_price_bar(ticker: str, market: MarketCode, raw_bar: PriceBar | Mappi
     )
 
 
+def _coerce_factor_score(raw_snapshot: Mapping[str, Any], field_name: str) -> float:
+    raw_value = raw_snapshot.get(field_name)
+    if raw_value is None:
+        raise ValueError(f"factor input loader must supply {field_name}")
+    return float(raw_value)
+
+
+def _coerce_factor_snapshot(
+    ticker: str,
+    market: MarketCode,
+    raw_snapshot: FactorSnapshot | Mapping[str, Any],
+) -> FactorSnapshot:
+    if isinstance(raw_snapshot, FactorSnapshot):
+        if raw_snapshot.ticker != ticker:
+            raise ValueError("factor input loader returned mismatched ticker")
+        if raw_snapshot.market != market:
+            raise ValueError("factor input loader returned mismatched market")
+        return FactorSnapshot(
+            ticker=ticker,
+            market=market,
+            value_score=float(raw_snapshot.value_score),
+            quality_score=float(raw_snapshot.quality_score),
+            momentum_score=float(raw_snapshot.momentum_score),
+            low_vol_score=float(raw_snapshot.low_vol_score),
+        )
+
+    resolved_ticker = raw_snapshot.get("ticker", ticker)
+    if not isinstance(resolved_ticker, str):
+        raise ValueError("factor input loader must supply string ticker values")
+    if resolved_ticker != ticker:
+        raise ValueError("factor input loader returned mismatched ticker")
+
+    resolved_market = raw_snapshot.get("market", market)
+    if resolved_market != market:
+        raise ValueError("factor input loader returned mismatched market")
+
+    return FactorSnapshot(
+        ticker=ticker,
+        market=market,
+        value_score=_coerce_factor_score(raw_snapshot, "value_score"),
+        quality_score=_coerce_factor_score(raw_snapshot, "quality_score"),
+        momentum_score=_coerce_factor_score(raw_snapshot, "momentum_score"),
+        low_vol_score=_coerce_factor_score(raw_snapshot, "low_vol_score"),
+    )
+
+
 def _coerce_event_type(raw_value: str) -> EventType | None:
     normalized = raw_value.strip().lower()
     for event_type in EventType:
@@ -71,10 +118,12 @@ class KRStrategyDataProvider:
         self,
         *,
         price_history_loader: PriceHistoryLoader | None = None,
+        factor_input_loader: FactorInputLoader | None = None,
         read_session_factory: Callable[[], Any] | None = None,
         settings: Settings | None = None,
     ) -> None:
         self.price_history_loader = price_history_loader
+        self.factor_input_loader = factor_input_loader
         self.read_session_factory = read_session_factory or get_read_session
         self.settings = settings or get_settings()
         self._price_history_cache: dict[tuple[str, str, datetime], list[PriceBar]] = {}
@@ -132,7 +181,21 @@ class KRStrategyDataProvider:
         market: MarketCode,
         as_of: datetime,
     ) -> dict[str, FactorSnapshot]:
-        return {}
+        if market != "KR" or not tickers:
+            return {}
+        if self.factor_input_loader is None:
+            return {}
+
+        unique_tickers = list(dict.fromkeys(tickers))
+        raw_inputs = self.factor_input_loader(unique_tickers, market, as_of)
+        factors: dict[str, FactorSnapshot] = {}
+
+        for ticker in unique_tickers:
+            raw_snapshot = raw_inputs.get(ticker)
+            if raw_snapshot is None:
+                continue
+            factors[ticker] = _coerce_factor_snapshot(ticker, market, raw_snapshot)
+        return factors
 
     def get_event_flags(
         self,
