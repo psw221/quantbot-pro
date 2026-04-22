@@ -2,6 +2,7 @@ from auth.token_manager import TokenManager
 from core.settings import get_settings
 from data.collector import (
     build_composite_kr_price_history_loader,
+    build_default_kr_factor_input_loader,
     build_default_kr_universe_loader,
     build_kis_kr_price_history_loader,
     build_pykrx_price_history_loader,
@@ -16,6 +17,16 @@ from execution.writer_queue import WriterQueue
 from monitor.operations import OperationsRecorder
 from monitor.telegram_bot import TelegramNotifier
 from strategy.data_provider import FactorInputLoader, KRStrategyDataProvider
+
+
+def _resolve_factor_input_loader(
+    *,
+    settings,
+    factor_input_loader: FactorInputLoader | None,
+) -> FactorInputLoader | None:
+    if factor_input_loader is not None:
+        return factor_input_loader
+    return build_default_kr_factor_input_loader(settings=settings)
 
 
 def build_strategy_cycle_runner(
@@ -53,10 +64,15 @@ def build_strategy_cycle_runner(
         access_token = current_cycle_access_token()
         return api_client.normalize_cash_available(api_client.get_cash_balance(access_token))
 
+    resolved_factor_input_loader = _resolve_factor_input_loader(
+        settings=settings,
+        factor_input_loader=factor_input_loader,
+    )
+
     trader = auto_trader or AutoTrader(
         data_provider=KRStrategyDataProvider(
             price_history_loader=price_history_loader,
-            factor_input_loader=factor_input_loader,
+            factor_input_loader=resolved_factor_input_loader,
             settings=settings,
         ),
         universe_loader=build_default_kr_universe_loader(),

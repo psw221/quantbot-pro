@@ -7,6 +7,7 @@ from typing import Any
 from auth.token_manager import TokenManager
 from data.database import Position, get_read_session
 from execution.kis_api import KISApiClient
+from strategy.data_provider import FactorInputLoader
 
 
 DEFAULT_KR_AUTO_TRADING_UNIVERSE = (
@@ -41,6 +42,11 @@ def build_default_kr_universe_loader(
         return list(dict.fromkeys([*tickers, *DEFAULT_KR_AUTO_TRADING_UNIVERSE]))
 
     return loader
+
+
+def build_default_kr_factor_input_loader(*, settings: Any | None = None) -> FactorInputLoader | None:
+    del settings
+    return None
 
 
 def build_pykrx_price_history_loader() -> Callable[[list[str], datetime, int], dict[str, list[dict[str, object]]]]:

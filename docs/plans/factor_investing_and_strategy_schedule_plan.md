@@ -424,13 +424,85 @@
 
 #### Task 2.3 bootstrap wiring 추가
 
+- 상태:
+  - done
+  - canonical bootstrap이 factor input loader default builder entrypoint를 통해 loader를 resolve하도록 반영했다.
+  - explicit `factor_input_loader` 주입은 계속 우선권을 갖고, 기본 builder가 source를 만들지 못하면 `None` fallback으로 runtime 기동을 유지한다.
+  - 현재 저장소에는 concrete factor input source가 아직 없어 default builder는 `None`을 반환하고, 기본 runtime은 계속 `factor_input_unavailable` 진단을 남긴다.
 - 목표:
   - main bootstrap에서 factor input loader를 주입한다.
 - 대상:
   - `main.py`
+  - 필요 시 `data/collector.py`
+  - `tests/test_execution/test_main_wiring.py`
 - 완료 기준:
   - loader가 있으면 factor strategy가 실행 가능 상태가 된다.
   - loader가 없어도 runtime 기동은 유지된다.
+
+세부 계획:
+
+- 범위 경계:
+  - 이번 task는 bootstrap이 "어떤 factor input loader를 기본으로 조립할지"를 고정하는 작업이다.
+  - `KRStrategyDataProvider`의 정규화 계약, unavailable skip semantics, settings/default builder 확장은 이미 끝난 상태로 전제한다.
+  - factor score를 실제로 계산하거나 외부 신규 서비스를 붙이는 일은 이번 task 범위에 포함하지 않는다.
+  - strategy별 cron 분리와 runtime job 분리는 계속 `Task 3` 범위로 남긴다.
+- 현재 blocker / mismatch:
+  - `main.build_strategy_cycle_runner()`는 이미 optional `factor_input_loader` hook을 받지만, `main.main()`은 아직 기본 loader를 조립해 넘기지 않는다.
+  - `data.collector.py`에는 universe loader와 price history loader builder는 있지만, factor input loader builder는 아직 없다.
+  - 현재 `tests/test_execution/test_main_wiring.py`는 "외부에서 넘긴 optional hook이 전달되는지"까지만 검증하고, bootstrap이 기본 loader를 어떻게 선택하는지는 고정하지 않는다.
+  - 그 결과 canonical runtime 경로에서는 `factor_investing`이 계속 `factor_input_unavailable`로만 남고, 실제 VTS smoke 준비를 진행할 수 없다.
+- 고정할 bootstrap 계약:
+  - bootstrap은 factor input source를 사용할 수 있으면 `FactorInputLoader` callable을 1회 조립해 `build_strategy_cycle_runner()`에 전달한다.
+  - source가 준비되지 않았거나 구성할 수 없으면 `None`을 넘겨 runtime 기동을 유지한다.
+  - loader 부재는 intentional skip으로 남기고, bootstrap 단계에서 runtime 시작 자체를 막지 않는다.
+  - loader 조립은 startup 시점에만 수행하고, cycle마다 builder를 다시 만들지 않는다.
+  - loader 내부의 payload 오류나 실행 오류는 계속 `Task 1.2` 계약대로 hard failure로 남겨야 한다.
+- 구현 단계:
+  - `data/collector.py`에 bootstrap이 재사용할 수 있는 factor input loader builder를 추가한다.
+  - builder 명칭은 기존 패턴에 맞춰 `build_default_kr_factor_input_loader(...)` 계열로 두는 안이 가장 자연스럽다.
+  - builder는 source를 만들 수 없으면 `None` 또는 no-op callable이 아니라 명시적 `None`을 반환해 bootstrap이 unavailable 상태를 그대로 표현하게 한다.
+  - `main.py`는 price history loader를 조립하는 위치와 같은 계층에서 factor input loader도 함께 조립한다.
+  - `main.main()`이 `build_strategy_cycle_runner()`를 호출할 때 기본 factor loader를 전달하도록 바꾼다.
+  - 이미 외부에서 `factor_input_loader`를 직접 주입하는 테스트/확장 경로가 있으므로, 그 표면은 유지하고 기본 wiring만 추가한다.
+  - 인증 객체가 없어도 동작해야 하는 현재 bootstrap 계약을 깨지 않도록, factor loader 조립은 token/api client 부재와 분리해서 판단한다.
+- source 선택 원칙:
+  - 1차 범위는 `KR only`다.
+  - loader source는 로컬/저장소 내부에서 조립 가능한 입력 또는 기존 의존성으로 접근 가능한 입력만 사용한다.
+  - 새로운 네트워크 서비스나 별도 장기 저장 스키마를 이번 task에 묶지 않는다.
+  - source 미구현 상태라면 bootstrap builder는 `None` fallback을 명시적으로 유지하고, 이후 source 구현 task와 분리한다.
+- 테스트 계획:
+  - `tests/test_execution/test_main_wiring.py`
+    - bootstrap이 기본 factor loader builder를 호출하고 그 결과를 `KRStrategyDataProvider`에 전달하는지 검증한다.
+    - 기본 builder가 `None`을 반환해도 runner가 정상 생성되는지 검증한다.
+    - 이미 있는 explicit `factor_input_loader=` override가 기본 builder보다 우선하는지 검증한다.
+  - 필요 시 `tests/test_execution/test_auto_trader.py`
+    - canonical main wiring을 통해 만들어진 runner에서 factor loader present / absent 경로가 기존 diagnostics 계약과 충돌하지 않는지 최소 회귀를 확인한다.
+  - broader regression:
+    - `tests/test_execution`
+    - 필요 시 `tests/test_strategy tests\test_execution -q`
+- 완료 기준 구체화:
+  - bootstrap default path에서 factor loader를 만들 수 있으면 `factor_investing`이 `factor_input_available=True` 상태로 실행된다.
+  - source가 없으면 기존처럼 runtime은 뜨고 factor strategy만 `factor_input_unavailable`로 남는다.
+  - 기존 explicit injection hook과 access token 전달 계약은 그대로 유지된다.
+  - VTS smoke 전에 "bootstrap은 연결돼 있지만 source 준비 여부에 따라 available/unavailable이 갈린다"는 상태가 테스트로 고정된다.
+- 비목표:
+  - factor score 계산 로직 구현
+  - factor input 저장 스키마 추가
+  - `config/config.yaml` 기본 활성 전략 목록 변경
+  - strategy별 job 분리
+- 구현 결과:
+  - `data.collector.build_default_kr_factor_input_loader()`를 추가해 canonical bootstrap entrypoint를 고정했다.
+  - `main._resolve_factor_input_loader()`가 explicit loader 우선, 없으면 default builder 호출 규칙을 담당하도록 반영했다.
+  - `main.build_strategy_cycle_runner()`는 resolved factor loader를 `KRStrategyDataProvider`에 전달하도록 변경했다.
+  - 현재 default builder는 in-repo source 부재를 반영해 `None`을 반환하며, 이로 인해 기존 intentional skip semantics를 그대로 유지한다.
+- 검증 결과:
+  - `tests/test_execution/test_main_wiring.py`
+    - default factor loader builder 사용 경로
+    - default builder `None` fallback 경로
+    - explicit factor loader override 우선순위
+  - broader regression:
+    - `python -m pytest tests\test_execution -q`
+    - 필요 시 `python -m pytest tests\test_strategy tests\test_execution -q`
 
 ### Task 3. 전략별 스케줄 분리
 
@@ -578,10 +650,10 @@
 
 ## Recommended Next Task
 
-`Task 2.3`, 즉 `main.py` bootstrap에서 factor input loader를 실제로 주입하는 작업이다.
+`Task 3.1`, 즉 특정 전략 subset만 실행할 수 있는 `AutoTrader` 계약을 추가하는 작업이다.
 
 이유:
 
-- `Task 2.1`, `Task 2.2`로 canonical settings와 default builder 경로는 모두 열렸다.
-- 하지만 현재 기본 bootstrap은 factor input loader를 조립하지 않으므로 실제 런타임에서는 `factor_investing`이 계속 `factor_input_unavailable`로만 남는다.
-- 따라서 다음 가장 직접적인 blocker는 bootstrap wiring이다.
+- `Task 1.x`, `Task 2.1`, `Task 2.2`, `Task 2.3`까지 끝나면서 factor strategy의 설정 표면, default builder, bootstrap loader entrypoint는 모두 고정됐다.
+- 다음 남은 큰 축은 전략별 스케줄 분리이고, 그 첫 단계가 `AutoTrader`에 strategy subset 실행 계약을 추가하는 일이다.
+- 이 계약이 있어야 `trend_following`과 리밸런싱 전략을 서로 다른 job으로 분리해도 기존 cycle/result 표면을 유지할 수 있다.

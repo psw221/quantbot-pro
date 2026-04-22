@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import main as main_module
 from data.collector import (
     DEFAULT_KR_AUTO_TRADING_UNIVERSE,
+    build_default_kr_factor_input_loader,
     build_default_kr_universe_loader,
     build_kis_kr_price_history_loader,
     build_pykrx_price_history_loader,
@@ -120,7 +121,58 @@ def test_build_strategy_cycle_runner_returns_none_when_auto_trading_disabled(tmp
     assert runner is None
 
 
-def test_build_strategy_cycle_runner_wires_optional_factor_input_loader(monkeypatch, tmp_path) -> None:
+def test_default_kr_factor_input_loader_returns_none_without_source(tmp_path) -> None:
+    settings = build_settings(tmp_path, auto_trading={"enabled": True})
+
+    loader = build_default_kr_factor_input_loader(settings=settings)
+
+    assert loader is None
+
+
+def test_build_strategy_cycle_runner_uses_default_factor_input_loader_builder(monkeypatch, tmp_path) -> None:
+    settings = build_settings(tmp_path, auto_trading={"enabled": True})
+    captured = {}
+
+    class DummyTokenManager:
+        def get_valid_token(self, env):
+            assert env == settings.env
+            return "access-token"
+
+    class DummyApiClient:
+        def get_cash_balance(self, access_token):
+            assert access_token == "access-token"
+            return {"output": {"ord_psbl_cash": "1500000"}}
+
+        def normalize_cash_available(self, payload):
+            return float(payload["output"]["ord_psbl_cash"])
+
+    class CapturingAutoTrader:
+        def __init__(self, **kwargs):
+            captured["factor_input_loader"] = kwargs["data_provider"].factor_input_loader
+
+        def execute_cycle(self, market: str, as_of: datetime, *, access_token: str | None = None):
+            return {"market": market, "access_token": access_token}
+
+    default_loader = lambda tickers, market, as_of: {}
+
+    monkeypatch.setattr(main_module, "AutoTrader", CapturingAutoTrader)
+    monkeypatch.setattr(main_module, "build_default_kr_factor_input_loader", lambda *, settings: default_loader)
+
+    runner = build_strategy_cycle_runner(
+        settings=settings,
+        token_manager=DummyTokenManager(),
+        api_client=DummyApiClient(),
+        order_manager=object(),
+    )
+
+    assert runner is not None
+    result = runner("KR", datetime(2026, 4, 20, 9, 15, tzinfo=UTC))
+
+    assert captured["factor_input_loader"] is default_loader
+    assert result == {"market": "KR", "access_token": "access-token"}
+
+
+def test_build_strategy_cycle_runner_keeps_runner_when_default_factor_input_loader_is_missing(monkeypatch, tmp_path) -> None:
     settings = build_settings(tmp_path, auto_trading={"enabled": True})
     captured = {}
 
@@ -145,20 +197,64 @@ def test_build_strategy_cycle_runner_wires_optional_factor_input_loader(monkeypa
             return {"market": market, "access_token": access_token}
 
     monkeypatch.setattr(main_module, "AutoTrader", CapturingAutoTrader)
-    factor_input_loader = lambda tickers, market, as_of: {}
+    monkeypatch.setattr(main_module, "build_default_kr_factor_input_loader", lambda *, settings: None)
 
     runner = build_strategy_cycle_runner(
         settings=settings,
         token_manager=DummyTokenManager(),
         api_client=DummyApiClient(),
         order_manager=object(),
-        factor_input_loader=factor_input_loader,
     )
 
     assert runner is not None
     result = runner("KR", datetime(2026, 4, 20, 9, 15, tzinfo=UTC))
 
-    assert captured["factor_input_loader"] is factor_input_loader
+    assert captured["factor_input_loader"] is None
+    assert result == {"market": "KR", "access_token": "access-token"}
+
+
+def test_build_strategy_cycle_runner_preserves_explicit_factor_input_loader_over_default_builder(monkeypatch, tmp_path) -> None:
+    settings = build_settings(tmp_path, auto_trading={"enabled": True})
+    captured = {}
+
+    class DummyTokenManager:
+        def get_valid_token(self, env):
+            assert env == settings.env
+            return "access-token"
+
+    class DummyApiClient:
+        def get_cash_balance(self, access_token):
+            assert access_token == "access-token"
+            return {"output": {"ord_psbl_cash": "1500000"}}
+
+        def normalize_cash_available(self, payload):
+            return float(payload["output"]["ord_psbl_cash"])
+
+    class CapturingAutoTrader:
+        def __init__(self, **kwargs):
+            captured["factor_input_loader"] = kwargs["data_provider"].factor_input_loader
+
+        def execute_cycle(self, market: str, as_of: datetime, *, access_token: str | None = None):
+            return {"market": market, "access_token": access_token}
+
+    default_loader = lambda tickers, market, as_of: {"default": {}}
+    explicit_loader = lambda tickers, market, as_of: {}
+
+    monkeypatch.setattr(main_module, "AutoTrader", CapturingAutoTrader)
+    monkeypatch.setattr(main_module, "build_default_kr_factor_input_loader", lambda *, settings: default_loader)
+
+    runner = build_strategy_cycle_runner(
+        settings=settings,
+        token_manager=DummyTokenManager(),
+        api_client=DummyApiClient(),
+        order_manager=object(),
+        factor_input_loader=explicit_loader,
+    )
+
+    assert runner is not None
+    result = runner("KR", datetime(2026, 4, 20, 9, 15, tzinfo=UTC))
+
+    assert captured["factor_input_loader"] is explicit_loader
     assert result == {"market": "KR", "access_token": "access-token"}
 
 
