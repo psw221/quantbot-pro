@@ -672,15 +672,97 @@
 
 #### Task 3.3 runtime job 분리
 
+- 상태:
+  - done
+  - `TradingRuntime`가 KR 시장에 대해 전략별 job id를 분리 등록하고, 각 job이 해당 전략 subset만 runner에 전달하도록 반영했다.
+  - `main.build_strategy_cycle_runner()`가 optional `strategies` 인자를 받아 `AutoTrader.execute_cycle()`에 그대로 전달하도록 확장했다.
+  - 기존 skip/failure/completed log contract는 유지했고, strategy별 scalar log 확장은 후속 `Task 4.1`로 남겨뒀다.
 - 목표:
   - KR 단일 strategy cycle job을 전략별 job으로 나눈다.
 - 대상:
   - `execution/runtime.py`
+  - `main.py`
+  - `tests/test_execution/test_runtime.py`
+  - `tests/test_execution/test_main_wiring.py`
 - 완료 기준:
   - `strategy_cycle_kr_trend_following`
   - `strategy_cycle_kr_dual_momentum`
   - `strategy_cycle_kr_factor_investing`
   - 리밸런싱 전략이 불필요한 15분 no-op를 남기지 않는다.
+
+세부 계획:
+
+- 범위 경계:
+  - 이번 task는 runtime job registration과 runner call 계약을 전략별 subset 기준으로 분리하는 작업이다.
+  - 새로운 전략 추가, cron 설정 표면 확장, diagnostics 스키마 변경은 이번 task 범위가 아니다.
+  - 즉 `Task 3.1`의 subset 실행 계약과 `Task 3.2`의 전략별 KR cron 설정을 실제 scheduler job에 연결하는 단계로 제한한다.
+- 현재 blocker / mismatch:
+  - `TradingRuntime`는 아직 단일 `STRATEGY_CYCLE_KR_JOB_ID`와 단일 `auto_trading.kr.schedule_cron`만 사용한다.
+  - `main.build_strategy_cycle_runner()`가 반환하는 callable도 아직 `(market, as_of)` 2-인자 계약이라 runtime이 subset 전략을 넘길 수 없다.
+  - `tests/test_execution/test_runtime.py`와 `tests/test_execution/test_main_wiring.py`도 현재 단일 KR job/단일 runner call 계약을 기준으로 고정돼 있다.
+  - 그 결과 `trend_following`만 돌리고 싶어도 factor/dual 전략이 같은 job에서 함께 평가되며, 리밸런싱 전략은 장중 15분 no-op를 반복한다.
+- 고정할 실행 계약:
+  - `strategy_cycle_runner`는 `(market, as_of, strategies=None)` 형태를 허용하도록 확장한다.
+  - runtime은 KR 시장에 대해 전략별 job id를 분리 등록한다.
+  - 각 job은 정확히 한 전략 subset만 runner에 전달해야 한다.
+  - 기존 skip/failure/completed log contract는 유지하되, `extra.market`, `source_env`, `strategy_diagnostics`는 기존처럼 계속 남아야 한다.
+  - 전략별 job이더라도 시장 세션, health gate, VTS gate는 동일하게 적용해야 한다.
+- 구현 단계:
+  - `execution/runtime.py`
+    - `STRATEGY_CYCLE_KR_JOB_ID`를 전략별 상수로 분리한다.
+    - `_register_strategy_cycle_jobs()`가 `settings.auto_trading.strategies`와 `settings.auto_trading.kr.resolve_schedule_cron(strategy)`를 기준으로 전략별 job을 등록하도록 바꾼다.
+    - 각 job은 lambda 캡처 오류를 피하도록 strategy name을 안전하게 bind한 뒤 `_run_strategy_cycle_job("KR", strategies=[strategy_name])` 형태로 호출한다.
+    - `_run_strategy_cycle_job()`는 optional subset 인자를 받아 skip gate는 기존과 동일하게 수행하고, 실제 runner 호출만 subset 전달로 바꾼다.
+  - `main.py`
+    - `build_strategy_cycle_runner()`가 반환하는 `run_cycle` closure에 optional `strategies` 인자를 추가한다.
+    - closure는 `trader.execute_cycle(market, as_of, access_token=..., strategies=strategies)`로 그대로 위임한다.
+  - backward compatibility:
+    - subset 미지정 호출은 현재와 동일하게 전체 configured strategies를 실행한다.
+    - KR 외 시장은 기존 동작을 유지한다.
+- job id / cron 정책:
+  - 권장 job id:
+    - `strategy_cycle_kr_trend_following`
+    - `strategy_cycle_kr_dual_momentum`
+    - `strategy_cycle_kr_factor_investing`
+  - cron은 `settings.auto_trading.kr.resolve_schedule_cron(strategy_name)`를 통해 조회한다.
+  - 같은 cron 값을 공유하더라도 job은 분리 등록해 strategy-local diagnostics와 no-op 패턴을 분리한다.
+- 테스트 계획:
+  - `tests/test_execution/test_runtime.py`
+    - KR 전략별 job id가 각각 등록되는지 검증
+    - 각 job이 대응 전략 subset만 `strategy_cycle_runner`에 전달하는지 검증
+    - 기존 skip gate(`market_closed`, `trading_blocked`, `token_stale`, `polling_stale`)가 전략별 job에서도 유지되는지 최소 회귀 확인
+    - completed/error log가 전략별 job에서도 기존 extra contract를 깨지 않는지 검증
+  - `tests/test_execution/test_main_wiring.py`
+    - `build_strategy_cycle_runner()`가 optional `strategies` 인자를 받아 `AutoTrader.execute_cycle()`에 전달하는지 검증
+    - explicit factor loader wiring과 access token 전달 계약이 subset 지원 후에도 유지되는지 검증
+  - broader regression:
+    - `python -m pytest tests\test_execution\test_runtime.py tests\test_execution\test_main_wiring.py -q`
+    - 필요 시 `python -m pytest tests\test_strategy tests\test_execution -q`
+- 완료 기준 구체화:
+  - runtime이 KR 전략별 job 3개를 등록한다.
+  - 각 job은 해당 전략만 subset으로 실행한다.
+  - 단일 `schedule_cron` fallback과 strategy별 cron 설정이 모두 소비된다.
+  - trend 전용 job이 factor skip을 함께 남기지 않고, dual/factor job도 서로의 no-op를 섞지 않는다.
+- 비목표:
+  - dashboard UI 구조 변경
+  - `system_logs.extra_json` 스키마 추가 필드 도입
+  - US 전략별 job 분리
+  - open-order 차단 정책 변경
+- 구현 결과:
+  - `execution/runtime.py`
+    - 단일 `STRATEGY_CYCLE_KR_JOB_ID`를 전략별 상수 3개로 분리했다.
+    - `_register_strategy_cycle_jobs()`가 `settings.auto_trading.strategies`와 `settings.auto_trading.kr.resolve_schedule_cron(strategy)`를 기준으로 전략별 KR job을 등록하도록 변경했다.
+    - 각 job은 안전하게 bind된 strategy name으로 `_run_strategy_cycle_job("KR", strategies=[strategy_name])`를 호출하도록 반영했다.
+    - `_run_strategy_cycle_job()`는 optional subset 인자를 받아 기존 skip gate 이후 실제 runner 호출만 subset 전달로 바꿨다.
+  - `main.py`
+    - `build_strategy_cycle_runner()`가 반환하는 closure에 optional `strategies` 인자를 추가했다.
+    - closure는 `AutoTrader.execute_cycle(..., strategies=strategies)`로 subset을 그대로 위임한다.
+  - 테스트:
+    - `tests/test_execution/test_runtime.py`에 전략별 job id 등록, registered job별 subset forwarding, subset 경로에서도 skip gate와 completed/error log contract 유지 여부를 고정했다.
+    - `tests/test_execution/test_main_wiring.py`에 access token + strategy subset 전달 계약과 기존 factor loader wiring 회귀를 반영했다.
+- 검증 결과:
+  - `python -m pytest tests\test_execution\test_main_wiring.py tests\test_execution\test_runtime.py -q`
+  - `python -m pytest tests\test_strategy tests\test_execution -q`
 
 ### Task 4. 운영 진단 정합성 보강
 
@@ -793,10 +875,10 @@
 
 ## Recommended Next Task
 
-`Task 3.3`, 즉 KR 단일 strategy cycle job을 전략별 job으로 분리하는 작업이다.
+`Task 4.1`, 즉 strategy별 cycle log 확장 작업이다.
 
 이유:
 
-- `Task 3.1`로 subset 실행 계약이, `Task 3.2`로 전략별 KR cron 설정 표면이 모두 준비됐다.
-- 이제 runtime은 각 전략별 cron을 읽어 별도 job id와 subset 호출로 분리할 수 있는 상태다.
-- 따라서 다음 직접 blocker는 `TradingRuntime`의 실제 job registration 분리다.
+- `Task 3.3`로 runtime job이 전략별로 분리됐지만, 현재 cycle log는 여전히 market-level 공통 extra만 남겨 strategy별 상태를 한 줄로 바로 식별하기 어렵다.
+- 후속 dashboard 확장(`Task 4.2`)도 먼저 log/diagnostics 쪽 canonical field가 정해져야 안정적으로 붙일 수 있다.
+- 따라서 다음 직접 작업은 `system_logs.extra_json`에 `strategy_name`, `strategy_cycle_status`, `strategy_skip_reason`, `factor_input_available`를 고정하는 `Task 4.1`이다.

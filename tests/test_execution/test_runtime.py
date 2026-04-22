@@ -15,7 +15,9 @@ from execution.runtime import (
     HEALTHCHECK_JOB_ID,
     PRE_CLOSE_CANCEL_KR_JOB_ID,
     PRE_CLOSE_CANCEL_US_JOB_ID,
-    STRATEGY_CYCLE_KR_JOB_ID,
+    STRATEGY_CYCLE_KR_DUAL_MOMENTUM_JOB_ID,
+    STRATEGY_CYCLE_KR_FACTOR_INVESTING_JOB_ID,
+    STRATEGY_CYCLE_KR_TREND_FOLLOWING_JOB_ID,
     TOKEN_REFRESH_JOB_ID,
     TradingRuntime,
     get_market_session_window,
@@ -161,8 +163,11 @@ def test_trading_runtime_registers_expected_jobs(tmp_path) -> None:
     }
 
 
-def test_trading_runtime_registers_strategy_cycle_job_when_auto_trading_enabled(tmp_path) -> None:
-    settings = build_settings(tmp_path, auto_trading={"enabled": True})
+def test_trading_runtime_registers_strategy_cycle_jobs_when_auto_trading_enabled(tmp_path) -> None:
+    settings = build_settings(
+        tmp_path,
+        auto_trading={"enabled": True, "strategies": ["trend_following", "dual_momentum", "factor_investing"]},
+    )
     writer_queue = WriterQueue()
     runtime = TradingRuntime(writer_queue=writer_queue, settings=settings)
 
@@ -172,33 +177,68 @@ def test_trading_runtime_registers_strategy_cycle_job_when_auto_trading_enabled(
     finally:
         runtime.stop()
 
-    assert STRATEGY_CYCLE_KR_JOB_ID in jobs
+    assert {
+        STRATEGY_CYCLE_KR_TREND_FOLLOWING_JOB_ID,
+        STRATEGY_CYCLE_KR_DUAL_MOMENTUM_JOB_ID,
+        STRATEGY_CYCLE_KR_FACTOR_INVESTING_JOB_ID,
+    }.issubset(jobs)
 
 
 def test_trading_runtime_runs_strategy_cycle_runner_when_enabled(tmp_path) -> None:
     settings = build_settings(tmp_path, auto_trading={"enabled": True})
     writer_queue = WriterQueue()
     now = datetime(2026, 4, 15, 9, 15, tzinfo=KST)
-    calls: list[tuple[str, datetime]] = []
+    calls: list[tuple[str, datetime, list[str] | None]] = []
     recorder = RecordingOperationsRecorder()
     runtime = TradingRuntime(
         writer_queue=writer_queue,
         settings=settings,
         time_provider=lambda: now,
-        strategy_cycle_runner=lambda market, as_of: calls.append((market, as_of)),
+        strategy_cycle_runner=lambda market, as_of, strategies: calls.append((market, as_of, strategies)),
         operations_recorder=recorder,
     )
 
     try:
         runtime.start()
         _mark_strategy_cycle_ready(runtime, now)
-        runtime._run_strategy_cycle_job("KR")
+        runtime._run_strategy_cycle_job("KR", strategies=["trend_following"])
     finally:
         runtime.stop()
 
-    assert calls == [("KR", now)]
+    assert calls == [("KR", now, ["trend_following"])]
     assert recorder.logs[-1]["message"] == "auto-trading cycle completed"
     assert recorder.logs[-1]["extra"]["market"] == "KR"
+
+
+def test_trading_runtime_registered_strategy_jobs_forward_requested_subset(tmp_path) -> None:
+    settings = build_settings(
+        tmp_path,
+        auto_trading={"enabled": True, "strategies": ["trend_following", "dual_momentum", "factor_investing"]},
+    )
+    writer_queue = WriterQueue()
+    now = datetime(2026, 4, 15, 9, 15, tzinfo=KST)
+    calls: list[tuple[str, datetime, list[str] | None]] = []
+    runtime = TradingRuntime(
+        writer_queue=writer_queue,
+        settings=settings,
+        time_provider=lambda: now,
+        strategy_cycle_runner=lambda market, as_of, strategies: calls.append((market, as_of, strategies)),
+    )
+
+    try:
+        runtime.start()
+        _mark_strategy_cycle_ready(runtime, now)
+        runtime.scheduler.get_job(STRATEGY_CYCLE_KR_TREND_FOLLOWING_JOB_ID).func()
+        runtime.scheduler.get_job(STRATEGY_CYCLE_KR_DUAL_MOMENTUM_JOB_ID).func()
+        runtime.scheduler.get_job(STRATEGY_CYCLE_KR_FACTOR_INVESTING_JOB_ID).func()
+    finally:
+        runtime.stop()
+
+    assert calls == [
+        ("KR", now, ["trend_following"]),
+        ("KR", now, ["dual_momentum"]),
+        ("KR", now, ["factor_investing"]),
+    ]
 
 
 def test_trading_runtime_records_rejection_reason_summary_in_strategy_cycle_log(tmp_path) -> None:
@@ -230,14 +270,14 @@ def test_trading_runtime_records_rejection_reason_summary_in_strategy_cycle_log(
         writer_queue=writer_queue,
         settings=settings,
         time_provider=lambda: now,
-        strategy_cycle_runner=lambda market, as_of: result,
+        strategy_cycle_runner=lambda market, as_of, strategies: result,
         operations_recorder=recorder,
     )
 
     try:
         runtime.start()
         _mark_strategy_cycle_ready(runtime, now)
-        runtime._run_strategy_cycle_job("KR")
+        runtime._run_strategy_cycle_job("KR", strategies=["factor_investing"])
     finally:
         runtime.stop()
 
@@ -250,20 +290,20 @@ def test_trading_runtime_skips_strategy_cycle_when_market_is_closed_and_logs_rea
     settings = build_settings(tmp_path, auto_trading={"enabled": True})
     writer_queue = WriterQueue()
     now = datetime(2026, 4, 15, 8, 30, tzinfo=KST)
-    calls: list[tuple[str, datetime]] = []
+    calls: list[tuple[str, datetime, list[str] | None]] = []
     recorder = RecordingOperationsRecorder()
     runtime = TradingRuntime(
         writer_queue=writer_queue,
         settings=settings,
         time_provider=lambda: now,
-        strategy_cycle_runner=lambda market, as_of: calls.append((market, as_of)),
+        strategy_cycle_runner=lambda market, as_of, strategies: calls.append((market, as_of, strategies)),
         operations_recorder=recorder,
     )
 
     try:
         runtime.start()
         _mark_strategy_cycle_ready(runtime, now)
-        runtime._run_strategy_cycle_job("KR")
+        runtime._run_strategy_cycle_job("KR", strategies=["trend_following"])
     finally:
         runtime.stop()
 
@@ -276,13 +316,13 @@ def test_trading_runtime_skips_strategy_cycle_when_trading_is_blocked_and_logs_r
     settings = build_settings(tmp_path, auto_trading={"enabled": True})
     writer_queue = WriterQueue()
     now = datetime(2026, 4, 15, 9, 15, tzinfo=KST)
-    calls: list[tuple[str, datetime]] = []
+    calls: list[tuple[str, datetime, list[str] | None]] = []
     recorder = RecordingOperationsRecorder()
     runtime = TradingRuntime(
         writer_queue=writer_queue,
         settings=settings,
         time_provider=lambda: now,
-        strategy_cycle_runner=lambda market, as_of: calls.append((market, as_of)),
+        strategy_cycle_runner=lambda market, as_of, strategies: calls.append((market, as_of, strategies)),
         operations_recorder=recorder,
     )
 
@@ -290,7 +330,7 @@ def test_trading_runtime_skips_strategy_cycle_when_trading_is_blocked_and_logs_r
         runtime.start()
         _mark_strategy_cycle_ready(runtime, now)
         runtime.state.trading_blocked = True
-        runtime._run_strategy_cycle_job("KR")
+        runtime._run_strategy_cycle_job("KR", strategies=["trend_following"])
     finally:
         runtime.stop()
 
@@ -304,13 +344,13 @@ def test_trading_runtime_skips_strategy_cycle_when_polling_is_stale_and_logs_rea
     settings = build_settings(tmp_path, auto_trading={"enabled": True})
     writer_queue = WriterQueue()
     now = datetime(2026, 4, 15, 9, 15, tzinfo=KST)
-    calls: list[tuple[str, datetime]] = []
+    calls: list[tuple[str, datetime, list[str] | None]] = []
     recorder = RecordingOperationsRecorder()
     runtime = TradingRuntime(
         writer_queue=writer_queue,
         settings=settings,
         time_provider=lambda: now,
-        strategy_cycle_runner=lambda market, as_of: calls.append((market, as_of)),
+        strategy_cycle_runner=lambda market, as_of, strategies: calls.append((market, as_of, strategies)),
         operations_recorder=recorder,
     )
 
@@ -318,7 +358,7 @@ def test_trading_runtime_skips_strategy_cycle_when_polling_is_stale_and_logs_rea
         runtime.start()
         runtime.state.last_token_refresh_at = now.astimezone(timezone.utc) - timedelta(hours=1)
         runtime.state.last_poll_success_at = now.astimezone(timezone.utc) - timedelta(minutes=30)
-        runtime._run_strategy_cycle_job("KR")
+        runtime._run_strategy_cycle_job("KR", strategies=["trend_following"])
     finally:
         runtime.stop()
 
@@ -332,13 +372,13 @@ def test_trading_runtime_skips_strategy_cycle_when_writer_queue_is_degraded_and_
     settings = build_settings(tmp_path, auto_trading={"enabled": True})
     writer_queue = WriterQueue()
     now = datetime(2026, 4, 15, 9, 15, tzinfo=KST)
-    calls: list[tuple[str, datetime]] = []
+    calls: list[tuple[str, datetime, list[str] | None]] = []
     recorder = RecordingOperationsRecorder()
     runtime = TradingRuntime(
         writer_queue=writer_queue,
         settings=settings,
         time_provider=lambda: now,
-        strategy_cycle_runner=lambda market, as_of: calls.append((market, as_of)),
+        strategy_cycle_runner=lambda market, as_of, strategies: calls.append((market, as_of, strategies)),
         operations_recorder=recorder,
     )
 
@@ -350,7 +390,7 @@ def test_trading_runtime_skips_strategy_cycle_when_writer_queue_is_degraded_and_
             "health",
             lambda: QueueHealthStub(running=True, degraded=True, queue_depth=0, last_error="queue degraded"),
         )
-        runtime._run_strategy_cycle_job("KR")
+        runtime._run_strategy_cycle_job("KR", strategies=["trend_following"])
     finally:
         runtime.stop()
 
@@ -364,20 +404,20 @@ def test_trading_runtime_skips_strategy_cycle_outside_vts_environment(tmp_path) 
     settings = build_settings(tmp_path, auto_trading={"enabled": True}).model_copy(update={"env": RuntimeEnv.PROD})
     writer_queue = WriterQueue()
     now = datetime(2026, 4, 15, 9, 15, tzinfo=KST)
-    calls: list[tuple[str, datetime]] = []
+    calls: list[tuple[str, datetime, list[str] | None]] = []
     recorder = RecordingOperationsRecorder()
     runtime = TradingRuntime(
         writer_queue=writer_queue,
         settings=settings,
         time_provider=lambda: now,
-        strategy_cycle_runner=lambda market, as_of: calls.append((market, as_of)),
+        strategy_cycle_runner=lambda market, as_of, strategies: calls.append((market, as_of, strategies)),
         operations_recorder=recorder,
     )
 
     try:
         runtime.start()
         _mark_strategy_cycle_ready(runtime, now)
-        runtime._run_strategy_cycle_job("KR")
+        runtime._run_strategy_cycle_job("KR", strategies=["trend_following"])
     finally:
         runtime.stop()
 
@@ -392,7 +432,7 @@ def test_trading_runtime_records_strategy_cycle_failure_without_crashing(tmp_pat
     now = datetime(2026, 4, 15, 9, 15, tzinfo=KST)
     recorder = RecordingOperationsRecorder()
 
-    def failing_runner(market: str, as_of: datetime) -> None:
+    def failing_runner(market: str, as_of: datetime, strategies: list[str] | None) -> None:
         raise RuntimeError("strategy cycle exploded")
 
     runtime = TradingRuntime(
@@ -407,7 +447,7 @@ def test_trading_runtime_records_strategy_cycle_failure_without_crashing(tmp_pat
     try:
         runtime.start()
         _mark_strategy_cycle_ready(runtime, now)
-        runtime._run_strategy_cycle_job("KR")
+        runtime._run_strategy_cycle_job("KR", strategies=["trend_following"])
         snapshot_error = runtime.state.last_error
     finally:
         runtime.stop()
@@ -420,17 +460,17 @@ def test_trading_runtime_records_strategy_cycle_failure_without_crashing(tmp_pat
 def test_trading_runtime_skips_strategy_cycle_runner_when_auto_trading_is_disabled(tmp_path) -> None:
     settings = build_settings(tmp_path)
     writer_queue = WriterQueue()
-    calls: list[tuple[str, datetime]] = []
+    calls: list[tuple[str, datetime, list[str] | None]] = []
     runtime = TradingRuntime(
         writer_queue=writer_queue,
         settings=settings,
         time_provider=lambda: datetime(2026, 4, 15, 9, 15, tzinfo=KST),
-        strategy_cycle_runner=lambda market, as_of: calls.append((market, as_of)),
+        strategy_cycle_runner=lambda market, as_of, strategies: calls.append((market, as_of, strategies)),
     )
 
     try:
         runtime.start()
-        runtime._run_strategy_cycle_job("KR")
+        runtime._run_strategy_cycle_job("KR", strategies=["trend_following"])
     finally:
         runtime.stop()
 

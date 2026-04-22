@@ -33,13 +33,21 @@ BROKER_POLL_JOB_ID = "broker_poll"
 PRE_CLOSE_CANCEL_KR_JOB_ID = "pre_close_cancel_kr"
 PRE_CLOSE_CANCEL_US_JOB_ID = "pre_close_cancel_us"
 HEALTHCHECK_JOB_ID = "healthcheck"
-STRATEGY_CYCLE_KR_JOB_ID = "strategy_cycle_kr"
+STRATEGY_CYCLE_KR_TREND_FOLLOWING_JOB_ID = "strategy_cycle_kr_trend_following"
+STRATEGY_CYCLE_KR_DUAL_MOMENTUM_JOB_ID = "strategy_cycle_kr_dual_momentum"
+STRATEGY_CYCLE_KR_FACTOR_INVESTING_JOB_ID = "strategy_cycle_kr_factor_investing"
+KR_STRATEGY_CYCLE_JOB_IDS = {
+    "trend_following": STRATEGY_CYCLE_KR_TREND_FOLLOWING_JOB_ID,
+    "dual_momentum": STRATEGY_CYCLE_KR_DUAL_MOMENTUM_JOB_ID,
+    "factor_investing": STRATEGY_CYCLE_KR_FACTOR_INVESTING_JOB_ID,
+}
 TOKEN_REFRESH_MAX_ATTEMPTS = 3
 BROKER_POLL_QUERY_MAX_ATTEMPTS = 3
 BROKER_POLL_RETRY_DELAY_SEC = 1.0
 PRE_CLOSE_CANCEL_MAX_ATTEMPTS = 3
 PRE_CLOSE_CANCEL_RETRY_DELAY_SEC = 1.0
 AUTO_TRADING_LOG_MODULE = "execution.runtime"
+StrategyCycleRunner = Callable[[str, datetime, list[str] | None], object]
 
 
 def to_kst(now: datetime) -> datetime:
@@ -112,7 +120,7 @@ class TradingRuntime:
         settings: Settings | None = None,
         scheduler: BackgroundScheduler | None = None,
         time_provider: Callable[[], datetime] | None = None,
-        strategy_cycle_runner: Callable[[str, datetime], object] | None = None,
+        strategy_cycle_runner: StrategyCycleRunner | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.writer_queue = writer_queue
@@ -223,14 +231,18 @@ class TradingRuntime:
             return
 
         if "KR" in self.settings.auto_trading.markets:
-            self.scheduler.add_job(
-                lambda: self._run_strategy_cycle_job("KR"),
-                trigger=CronTrigger.from_crontab(self.settings.auto_trading.kr.schedule_cron, timezone=KST),
-                id=STRATEGY_CYCLE_KR_JOB_ID,
-                replace_existing=True,
-            )
+            for strategy_name in self.settings.auto_trading.strategies:
+                self.scheduler.add_job(
+                    lambda strategy_name=strategy_name: self._run_strategy_cycle_job("KR", strategies=[strategy_name]),
+                    trigger=CronTrigger.from_crontab(
+                        self.settings.auto_trading.kr.resolve_schedule_cron(strategy_name),
+                        timezone=KST,
+                    ),
+                    id=KR_STRATEGY_CYCLE_JOB_IDS[strategy_name],
+                    replace_existing=True,
+                )
 
-    def _run_strategy_cycle_job(self, market: str) -> None:
+    def _run_strategy_cycle_job(self, market: str, *, strategies: list[str] | None = None) -> None:
         if not self.settings.auto_trading.enabled:
             return
         if self.strategy_cycle_runner is None:
@@ -252,7 +264,7 @@ class TradingRuntime:
             return
 
         try:
-            result = self.strategy_cycle_runner(market, as_of)
+            result = self.strategy_cycle_runner(market, as_of, strategies)
         except Exception as exc:
             self.state = replace(
                 self.state,

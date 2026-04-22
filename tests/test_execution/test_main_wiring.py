@@ -70,9 +70,9 @@ def test_pykrx_price_history_loader_normalizes_rows(monkeypatch) -> None:
     assert history["005930"][1]["timestamp"] == datetime(2026, 4, 20, tzinfo=UTC)
 
 
-def test_build_strategy_cycle_runner_passes_access_token_to_auto_trader(tmp_path) -> None:
+def test_build_strategy_cycle_runner_passes_access_token_and_strategy_subset_to_auto_trader(tmp_path) -> None:
     settings = build_settings(tmp_path, auto_trading={"enabled": True})
-    calls: list[tuple[str, datetime, str | None]] = []
+    calls: list[tuple[str, datetime, str | None, list[str] | None]] = []
 
     class DummyTokenManager:
         def get_valid_token(self, env):
@@ -88,8 +88,15 @@ def test_build_strategy_cycle_runner_passes_access_token_to_auto_trader(tmp_path
             return float(payload["output"]["ord_psbl_cash"])
 
     class DummyAutoTrader:
-        def execute_cycle(self, market: str, as_of: datetime, *, access_token: str | None = None):
-            calls.append((market, as_of, access_token))
+        def execute_cycle(
+            self,
+            market: str,
+            as_of: datetime,
+            *,
+            access_token: str | None = None,
+            strategies: list[str] | None = None,
+        ):
+            calls.append((market, as_of, access_token, strategies))
             return {"market": market}
 
     runner = build_strategy_cycle_runner(
@@ -102,9 +109,9 @@ def test_build_strategy_cycle_runner_passes_access_token_to_auto_trader(tmp_path
 
     assert runner is not None
     as_of = datetime(2026, 4, 20, 9, 15, tzinfo=UTC)
-    result = runner("KR", as_of)
+    result = runner("KR", as_of, ["trend_following"])
 
-    assert calls == [("KR", as_of, "access-token")]
+    assert calls == [("KR", as_of, "access-token", ["trend_following"])]
     assert result == {"market": "KR"}
 
 
@@ -150,7 +157,14 @@ def test_build_strategy_cycle_runner_uses_default_factor_input_loader_builder(mo
         def __init__(self, **kwargs):
             captured["factor_input_loader"] = kwargs["data_provider"].factor_input_loader
 
-        def execute_cycle(self, market: str, as_of: datetime, *, access_token: str | None = None):
+        def execute_cycle(
+            self,
+            market: str,
+            as_of: datetime,
+            *,
+            access_token: str | None = None,
+            strategies: list[str] | None = None,
+        ):
             return {"market": market, "access_token": access_token}
 
     default_loader = lambda tickers, market, as_of: {}
@@ -193,7 +207,14 @@ def test_build_strategy_cycle_runner_keeps_runner_when_default_factor_input_load
         def __init__(self, **kwargs):
             captured["factor_input_loader"] = kwargs["data_provider"].factor_input_loader
 
-        def execute_cycle(self, market: str, as_of: datetime, *, access_token: str | None = None):
+        def execute_cycle(
+            self,
+            market: str,
+            as_of: datetime,
+            *,
+            access_token: str | None = None,
+            strategies: list[str] | None = None,
+        ):
             return {"market": market, "access_token": access_token}
 
     monkeypatch.setattr(main_module, "AutoTrader", CapturingAutoTrader)
@@ -234,7 +255,14 @@ def test_build_strategy_cycle_runner_preserves_explicit_factor_input_loader_over
         def __init__(self, **kwargs):
             captured["factor_input_loader"] = kwargs["data_provider"].factor_input_loader
 
-        def execute_cycle(self, market: str, as_of: datetime, *, access_token: str | None = None):
+        def execute_cycle(
+            self,
+            market: str,
+            as_of: datetime,
+            *,
+            access_token: str | None = None,
+            strategies: list[str] | None = None,
+        ):
             return {"market": market, "access_token": access_token}
 
     default_loader = lambda tickers, market, as_of: {"default": {}}

@@ -81,11 +81,16 @@ def build_strategy_cycle_runner(
         settings=settings,
     )
 
-    def run_cycle(market: str, as_of):
+    def run_cycle(market: str, as_of, strategies: list[str] | None = None):
         nonlocal cycle_access_token
         cycle_access_token = token_manager.get_valid_token(settings.env)
         try:
-            return trader.execute_cycle(market, as_of, access_token=cycle_access_token)
+            return trader.execute_cycle(
+                market,
+                as_of,
+                access_token=cycle_access_token,
+                strategies=strategies,
+            )
         finally:
             cycle_access_token = None
 
