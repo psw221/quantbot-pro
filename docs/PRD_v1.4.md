@@ -456,13 +456,14 @@ Phase 2 기준 canonical 상태는 아래와 같습니다.
 
 ## 5.8 모니터링 및 알림 모듈
 
-- [ ] Streamlit 대시보드
-- [ ] 텔레그램 알림
-- [ ] 일일/월간 세후 성과 리포트
-- [ ] 시스템 헬스체크
+- [x] Streamlit 대시보드
+- [x] 텔레그램 알림
+- [x] 월간 세후 성과 리포트 출력 포맷
+- [ ] 일일 세후 성과 리포트
+- [x] 시스템 헬스체크
 - [ ] 환율 영향 알림
-- [ ] 브로커 상태 mismatch 알림
-- [ ] writer queue backlog 알림
+- [x] 브로커 상태 mismatch 알림
+- [x] writer queue backlog 알림
 
 헬스체크 기본 요약 기준:
 
@@ -515,6 +516,7 @@ Phase 2 기준 canonical 상태는 아래와 같습니다.
   - `dr_restore_failed`
   - `fx_alert`
 - `fx_alert`는 notifier 표면만 예약되어 있고, 자동 호출은 환율 임계치, 입력 소스, 시장별 정책이 명시될 때까지 deferred로 둡니다.
+- 현재 저장소 기준 일일 세후 리포트는 아직 없고, 월간 리포트는 `sell_date` calendar month 기준 `period_summary + trade_report_rows` 출력 포맷까지만 지원합니다.
 
 ---
 

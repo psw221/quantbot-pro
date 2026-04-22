@@ -31,6 +31,8 @@ streamlit run monitor/dashboard_app.py
 - `Open Orders`
 - `Recent Trades`
 - `Reconciliation`
+- `Recent Manual Restores`
+- `Recent Backtests`
 - `Recent Logs`
 - `Auto-Trading Diagnostics`
 - `Strategy Budget`
