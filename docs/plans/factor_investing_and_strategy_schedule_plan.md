@@ -235,6 +235,11 @@
 
 #### Task 1.3 factor input contract 테스트 추가
 
+- 상태:
+  - partial
+  - `Task 1.1`, `Task 1.2`에서 provider contract, skip diagnostics, payload error 경로의 핵심 테스트는 이미 반영됐다.
+  - `Task 1.3`에서는 injected settings/builder 기준으로 factor loader available 성공 경로, `execute_cycle()` persistence 경로, factor exit skip 동작까지 추가로 고정했다.
+  - 남은 범위는 실제 settings/default builder 경로가 열렸을 때의 canonical regression matrix를 채우는 일이다.
 - 목표:
   - input 존재/부재 모두 재현 가능한 테스트를 먼저 만든다.
 - 대상:
@@ -243,6 +248,73 @@
 - 완료 기준:
   - factor input 존재 시 ranking 기반 signal 생성 테스트가 통과한다.
   - factor input 부재 시 skip 경로 테스트가 통과한다.
+
+세부 계획:
+
+- 범위 경계:
+  - 이번 task의 남은 초점은 "이미 구현된 contract를 실제 auto-trading 표면에서 어떻게 검증 마감할지"다.
+  - provider-level contract 자체는 `Task 1.1`에서 이미 검증했다.
+  - loader 부재 skip/diagnostics 자체는 `Task 1.2`에서 이미 검증했다.
+  - settings 허용 전략 확장과 default builder 연결은 각각 `Task 2.1`, `Task 2.2`의 구현 범위이며, `Task 1.3`은 그 결과를 검증하는 테스트 마감 범위다.
+- 이미 커버된 테스트:
+  - `tests/test_execution/test_strategy_data_provider.py`
+    - loader 없음 시 empty response 유지
+    - raw dict / `FactorSnapshot` 정규화
+    - invalid payload 예외
+  - `tests/test_strategy/test_f4_strategies.py`
+    - quarterly ranking 기반 factor signal 생성
+  - `tests/test_execution/test_auto_trader.py`
+    - loader 부재 시 factor strategy skip diagnostics
+    - payload mismatch는 hard failure 유지
+    - loader 존재 시 `factor_input_available=True` diagnostics
+    - factor strategy `execute_cycle()` order persistence / submission
+    - factor position existing + loader 부재 시 exit evaluation skip
+  - `tests/test_execution/test_main_wiring.py`
+    - optional factor input loader hook 전달
+  - `tests/test_execution/test_runtime.py`, `tests/test_execution/test_dashboard_app.py`
+    - runtime log / dashboard diagnostics에 `strategy_diagnostics` 전달
+- 남은 blocker / 테스트 공백:
+  - 현재 `core.settings.AutoTradingSettings`가 `factor_investing`을 허용하지 않아 canonical settings 기반 테스트가 아직 없다.
+  - 현재 `execution.auto_trader._default_strategy_builders()`가 factor strategy를 포함하지 않아 default builder 경로의 통합 테스트가 아직 없다.
+  - factor input이 "있을 때" `strategy_diagnostics.factor_input_available=True`가 default auto-trading 경로에서 남는지 아직 직접 검증하지 않았다.
+  - 실제 default builder + canonical settings 경로에서 factor strategy가 `execute_cycle()` order persistence/submission 경로를 타는 테스트는 아직 없다.
+- 고정할 테스트 매트릭스:
+  - provider contract:
+    - loader 없음
+    - loader 있음
+    - invalid payload
+  - strategy signal generation:
+    - rebalance day + valid factor input
+    - non-rebalance day
+    - top_n ranking / sell-on-drop
+  - auto-trading run cycle:
+    - factor enabled + loader 없음 -> strategy skip
+    - factor enabled + loader 있음 -> diagnostics available true
+    - factor enabled + invalid payload -> cycle failure
+  - execute cycle:
+    - factor enabled + loader 있음 -> signal persistence / validated order / submitted order
+  - diagnostics propagation:
+    - runtime log extra에 strategy diagnostics 포함
+    - dashboard latest diagnostics에 strategy diagnostics 유지
+- 구현 순서:
+  - `Task 2.1` 완료 후 `tests/test_execution/test_bootstrap.py`에서 `auto_trading.strategies=["factor_investing"]` 허용 케이스를 추가한다.
+  - `Task 2.2` 완료 후 `tests/test_execution/test_auto_trader.py`에서 injected builder 우회 없이 default builder 경로를 검증한다.
+  - factor loader가 실제로 주입된 상태에서 `run_cycle()`과 `execute_cycle()` 각각의 성공 경로를 분리 검증한다.
+  - no-loader / invalid-payload / valid-loader 세 경로를 같은 테스트 묶음에서 비교 가능하게 유지한다.
+  - factor position existing + loader unavailable 시 exit path가 skip되는지, 또는 정책 변경이 있으면 그에 맞게 명시적으로 테스트를 고정한다.
+- 완료 기준 구체화:
+  - `build_settings(..., auto_trading={"strategies": ["factor_investing"]})`가 허용된다.
+  - default `AutoTrader` strategy builder가 factor strategy를 포함한 상태에서 관련 테스트가 통과한다.
+  - factor loader 존재 시 `strategy_diagnostics`에 `status=completed`, `factor_input_available=True`가 남는다.
+  - factor loader 부재 시 `strategy_diagnostics`에 `status=skipped`, `skip_reason=factor_input_unavailable`가 남는다.
+  - invalid factor payload는 skip으로 삼켜지지 않고 실패로 남는다.
+- 현재까지의 검증:
+  - `python -m pytest tests\test_execution\test_auto_trader.py -q`
+  - `python -m pytest tests\test_strategy tests\test_execution -q`
+- 비목표:
+  - factor input source 구현 자체
+  - 전략별 cron 분리 테스트
+  - dashboard panel의 세부 UI 레이아웃 검증
 
 ### Task 2. Factor investing auto-trading 경로 연결
 
