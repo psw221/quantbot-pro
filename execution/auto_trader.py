@@ -160,21 +160,28 @@ class AutoTrader:
         self.read_session_factory = read_session_factory or get_read_session
         self.strategy_builders = dict(strategy_builders or _default_strategy_builders())
 
-    def run_cycle(self, market: str, as_of: datetime) -> AutoTradeCycleResult:
+    def run_cycle(
+        self,
+        market: str,
+        as_of: datetime,
+        *,
+        strategies: list[str] | None = None,
+    ) -> AutoTradeCycleResult:
         normalized_market = market.upper()
         as_of_utc = _coerce_utc(as_of)
+        selected_strategies = self._resolve_cycle_strategies(strategies)
         universe = _dedupe_preserve_order(self.universe_loader(normalized_market, as_of_utc))
-        positions = self._load_positions(normalized_market)
+        positions = self._load_positions(normalized_market, strategy_names=selected_strategies)
         position_tickers = [position.ticker for position in positions.values()]
         tickers_for_context = _dedupe_preserve_order(universe + position_tickers)
         cash_available = self._load_cash_available(normalized_market, as_of_utc)
         event_flags = self.data_provider.get_event_flags(tickers_for_context, normalized_market, as_of_utc) if tickers_for_context else []
-        strategy_instances = self._build_strategy_instances()
+        strategy_instances = self._build_strategy_instances(selected_strategies)
 
         generated_signals: list[Signal] = []
         strategy_diagnostics: list[StrategyCycleDiagnostic] = []
         if universe:
-            for strategy_name in self.settings.auto_trading.strategies:
+            for strategy_name in selected_strategies:
                 diagnostic = self._evaluate_strategy_diagnostic(
                     strategy_name=strategy_name,
                     market=normalized_market,
@@ -187,7 +194,7 @@ class AutoTrader:
                 generated_signals.extend(strategy.generate_signals(universe, normalized_market, as_of_utc))
                 strategy_diagnostics.append(diagnostic)
         else:
-            for strategy_name in self.settings.auto_trading.strategies:
+            for strategy_name in selected_strategies:
                 strategy_diagnostics.append(
                     self._evaluate_strategy_diagnostic(
                         strategy_name=strategy_name,
@@ -213,7 +220,7 @@ class AutoTrader:
             source_env=self.settings.env.value,
             universe=universe,
             cash_available=cash_available,
-            configured_strategies=list(self.settings.auto_trading.strategies),
+            configured_strategies=list(selected_strategies),
             generated_signals=generated_signals + exit_signals,
             resolved_signals=resolved_signals,
             rejected_signals=exit_rejections,
@@ -347,11 +354,18 @@ class AutoTrader:
 
         return result
 
-    def execute_cycle(self, market: str, as_of: datetime, *, access_token: str | None = None) -> AutoTradeCycleResult:
+    def execute_cycle(
+        self,
+        market: str,
+        as_of: datetime,
+        *,
+        access_token: str | None = None,
+        strategies: list[str] | None = None,
+    ) -> AutoTradeCycleResult:
         if self.order_manager is None:
             raise ValueError("order_manager is required for execute_cycle")
 
-        result = self.run_cycle(market, as_of)
+        result = self.run_cycle(market, as_of, strategies=strategies)
         submitted_order_count = 0
         submitted_notional = 0.0
         max_orders = self.settings.auto_trading.max_orders_per_cycle
@@ -457,25 +471,45 @@ class AutoTrader:
                 return availability
         return StrategyInputAvailability(available=True)
 
-    def _build_strategy_instances(self) -> dict[str, BaseStrategy]:
+    def _resolve_cycle_strategies(self, strategies: list[str] | None) -> list[str]:
+        if strategies is None:
+            return list(self.settings.auto_trading.strategies)
+
+        selected_strategies = _dedupe_preserve_order(list(strategies))
+        if not selected_strategies:
+            raise ValueError("auto-trading strategy subset must not be empty")
+
+        configured_strategies = set(self.settings.auto_trading.strategies)
+        invalid_strategies = [name for name in selected_strategies if name not in configured_strategies]
+        if invalid_strategies:
+            joined = ", ".join(invalid_strategies)
+            raise ValueError(f"auto-trading strategy subset must be enabled in settings: {joined}")
+
+        return selected_strategies
+
+    def _build_strategy_instances(self, strategy_names: list[str]) -> dict[str, BaseStrategy]:
         instances: dict[str, BaseStrategy] = {}
-        for strategy_name in self.settings.auto_trading.strategies:
+        for strategy_name in strategy_names:
             builder = self.strategy_builders.get(strategy_name)
             if builder is None:
                 raise ValueError(f"unsupported auto-trading strategy: {strategy_name}")
             instances[strategy_name] = builder(self.settings, self.data_provider)
         return instances
 
-    def _load_positions(self, market: str) -> dict[tuple[str, str], PositionSnapshot]:
+    def _load_positions(
+        self,
+        market: str,
+        *,
+        strategy_names: list[str] | None = None,
+    ) -> dict[tuple[str, str], PositionSnapshot]:
         with self.read_session_factory() as session:
-            rows = list(
-                session.query(Position)
-                .filter(
-                    Position.market == market,
-                    Position.quantity > 0,
-                )
-                .all()
+            query = session.query(Position).filter(
+                Position.market == market,
+                Position.quantity > 0,
             )
+            if strategy_names is not None:
+                query = query.filter(Position.strategy.in_(strategy_names))
+            rows = list(query.all())
 
         positions: dict[tuple[str, str], PositionSnapshot] = {}
         for row in rows:

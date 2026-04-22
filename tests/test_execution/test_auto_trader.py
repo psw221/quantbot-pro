@@ -305,6 +305,140 @@ def test_auto_trader_skips_factor_strategy_when_factor_input_loader_is_missing(t
     assert diagnostics["factor_investing"].factor_input_available is False
 
 
+def test_auto_trader_runs_only_requested_strategy_subset(tmp_path) -> None:
+    settings = _settings_with_auto_trading_strategies(
+        tmp_path,
+        ["dual_momentum", "trend_following", "factor_investing"],
+    )
+    init_db(settings)
+    session_factory = get_session_factory()
+    as_of = datetime(2026, 4, 1, tzinfo=UTC)
+
+    with session_factory() as session:
+        session.add(
+            Position(
+                ticker="000660",
+                market="KR",
+                strategy="factor_investing",
+                quantity=2,
+                avg_cost=120000,
+                current_price=121000,
+                highest_price=122000,
+                entry_date=as_of - timedelta(days=10),
+                updated_at=utc_now(),
+            )
+        )
+        session.add(
+            PortfolioSnapshot(
+                snapshot_date=as_of - timedelta(days=1),
+                total_value_krw=12_000_000,
+                cash_krw=3_000_000,
+                domestic_value_krw=7_000_000,
+                overseas_value_krw=2_000_000,
+                usd_krw_rate=1350,
+                daily_return=0.01,
+                cumulative_return=0.10,
+                drawdown=-0.02,
+                max_drawdown=-0.05,
+                position_count=1,
+                created_at=utc_now(),
+            )
+        )
+        session.commit()
+
+    provider = KRStrategyDataProvider(
+        price_history_loader=lambda tickers, requested_as_of, lookback_days: {
+            "005930": _kr_bars("005930", [70000, 70500, 71000]),
+            "000660": _kr_bars("000660", [120000, 120500, 121000]),
+        },
+        settings=settings,
+    )
+    trader = AutoTrader(
+        data_provider=provider,
+        universe_loader=lambda market, timestamp: ["005930"],
+        strategy_builders={
+            "trend_following": lambda settings, provider: StubEntryStrategy("trend_following")
+        },
+        settings=settings,
+    )
+
+    result = trader.run_cycle("KR", as_of, strategies=["trend_following"])
+
+    assert result.configured_strategies == ["trend_following"]
+    assert result.details["position_tickers"] == []
+    assert [item.strategy_name for item in result.strategy_diagnostics] == ["trend_following"]
+    assert [signal.strategy for signal in result.generated_signals] == ["trend_following"]
+    assert len(result.order_candidates) == 1
+
+
+def test_auto_trader_dedupes_requested_strategy_subset_preserving_order(tmp_path) -> None:
+    settings = _settings_with_auto_trading_strategies(tmp_path, ["dual_momentum", "trend_following"])
+    init_db(settings)
+    provider = KRStrategyDataProvider(settings=settings)
+    trader = AutoTrader(
+        data_provider=provider,
+        universe_loader=lambda market, timestamp: [],
+        strategy_builders={
+            "dual_momentum": lambda settings, provider: StubEntryStrategy("dual_momentum"),
+            "trend_following": lambda settings, provider: StubEntryStrategy("trend_following"),
+        },
+        settings=settings,
+    )
+
+    result = trader.run_cycle(
+        "KR",
+        datetime(2026, 4, 1, tzinfo=UTC),
+        strategies=["trend_following", "trend_following", "dual_momentum"],
+    )
+
+    assert result.configured_strategies == ["trend_following", "dual_momentum"]
+    assert [item.strategy_name for item in result.strategy_diagnostics] == ["trend_following", "dual_momentum"]
+
+
+def test_auto_trader_rejects_empty_strategy_subset(tmp_path) -> None:
+    settings = build_settings(
+        tmp_path,
+        auto_trading={"enabled": True, "strategies": ["trend_following"]},
+    )
+    init_db(settings)
+    provider = KRStrategyDataProvider(settings=settings)
+    trader = AutoTrader(
+        data_provider=provider,
+        universe_loader=lambda market, timestamp: [],
+        strategy_builders={
+            "trend_following": lambda settings, provider: StubEntryStrategy("trend_following")
+        },
+        settings=settings,
+    )
+
+    with pytest.raises(ValueError, match="must not be empty"):
+        trader.run_cycle("KR", datetime(2026, 4, 1, tzinfo=UTC), strategies=[])
+
+
+def test_auto_trader_rejects_strategy_subset_outside_configured_settings(tmp_path) -> None:
+    settings = build_settings(
+        tmp_path,
+        auto_trading={"enabled": True, "strategies": ["trend_following"]},
+    )
+    init_db(settings)
+    provider = KRStrategyDataProvider(settings=settings)
+    trader = AutoTrader(
+        data_provider=provider,
+        universe_loader=lambda market, timestamp: [],
+        strategy_builders={
+            "trend_following": lambda settings, provider: StubEntryStrategy("trend_following")
+        },
+        settings=settings,
+    )
+
+    with pytest.raises(ValueError, match="must be enabled in settings: factor_investing"):
+        trader.run_cycle(
+            "KR",
+            datetime(2026, 4, 1, tzinfo=UTC),
+            strategies=["factor_investing"],
+        )
+
+
 def test_auto_trader_propagates_factor_input_payload_errors(tmp_path) -> None:
     settings = _settings_with_auto_trading_strategies(tmp_path, ["factor_investing"])
     provider = KRStrategyDataProvider(
@@ -690,6 +824,79 @@ def test_auto_trader_default_builder_executes_factor_strategy_with_canonical_set
     assert order.strategy == "factor_investing"
     assert order.status == "submitted"
     assert order.kis_order_no == "20002"
+
+
+def test_auto_trader_execute_cycle_uses_requested_strategy_subset(tmp_path) -> None:
+    class AcceptedSubmitClient:
+        def submit_order(self, payload, access_token=None):
+            return {"rt_cd": "0", "msg_cd": "APBK0012", "msg1": "ok", "output": {"ODNO": "20003"}}
+
+        def normalize_order_result(self, payload):
+            return BrokerOrderResult(
+                accepted=True,
+                broker_order_no=payload["output"]["ODNO"],
+                broker_order_orgno="06010",
+                raw_payload=payload,
+            )
+
+    settings = _settings_with_auto_trading_strategies(tmp_path, ["dual_momentum", "trend_following"])
+    init_db(settings)
+    session_factory = get_session_factory()
+    writer_queue = WriterQueue()
+    writer_queue.start()
+    as_of = datetime(2026, 4, 1, tzinfo=UTC)
+
+    try:
+        with session_factory() as session:
+            session.add(
+                PortfolioSnapshot(
+                    snapshot_date=as_of - timedelta(days=1),
+                    total_value_krw=12_000_000,
+                    cash_krw=3_000_000,
+                    domestic_value_krw=7_000_000,
+                    overseas_value_krw=2_000_000,
+                    usd_krw_rate=1350,
+                    daily_return=0.01,
+                    cumulative_return=0.10,
+                    drawdown=-0.02,
+                    max_drawdown=-0.05,
+                    position_count=0,
+                    created_at=utc_now(),
+                )
+            )
+            session.commit()
+
+        provider = KRStrategyDataProvider(
+            price_history_loader=lambda tickers, requested_as_of, lookback_days: {
+                "005930": _kr_bars("005930", [70000, 70500, 71000]),
+            },
+            settings=settings,
+        )
+        manager = OrderManager(writer_queue=writer_queue, api_client=AcceptedSubmitClient(), settings=settings)
+        trader = AutoTrader(
+            data_provider=provider,
+            universe_loader=lambda market, timestamp: ["005930"],
+            strategy_builders={
+                "trend_following": lambda settings, provider: StubEntryStrategy("trend_following")
+            },
+            order_manager=manager,
+            settings=settings,
+        )
+
+        result = trader.execute_cycle("KR", as_of, strategies=["trend_following"])
+    finally:
+        writer_queue.stop()
+
+    assert result.configured_strategies == ["trend_following"]
+    assert [item.strategy_name for item in result.strategy_diagnostics] == ["trend_following"]
+    assert result.orders_submitted == 1
+    with session_factory() as session:
+        signal_row = session.query(SignalRow).one()
+        order = session.query(Order).one()
+
+    assert signal_row.strategy == "trend_following"
+    assert order.strategy == "trend_following"
+    assert order.kis_order_no == "20003"
 
 
 def test_auto_trader_skips_factor_exit_evaluation_when_loader_is_missing(tmp_path) -> None:

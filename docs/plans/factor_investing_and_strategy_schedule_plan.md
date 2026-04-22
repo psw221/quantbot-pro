@@ -508,6 +508,11 @@
 
 #### Task 3.1 전략 subset 실행 계약 추가
 
+- 상태:
+  - done
+  - `AutoTrader.run_cycle()`와 `execute_cycle()`가 optional `strategies` subset 인자를 지원한다.
+  - `configured_strategies`, `strategy_diagnostics`, selected position scope, exit evaluation scope가 모두 동일 subset 기준으로 동작하도록 반영했다.
+  - runtime/main wiring은 아직 기존 2-인자 runner 계약을 유지하고, subset 전달은 후속 task에서 연결한다.
 - 목표:
   - 특정 전략만 실행할 수 있는 AutoTrader 표면을 추가한다.
 - 대상:
@@ -515,6 +520,72 @@
 - 완료 기준:
   - 예: `execute_cycle(market, as_of, strategies=[...])`
   - trend job이 factor strategy를 호출하지 않는다.
+
+세부 계획:
+
+- 범위 경계:
+  - 이번 task는 `AutoTrader`가 "설정된 전체 전략" 대신 "호출 시 지정한 subset"만 실행할 수 있게 만드는 계약 작업이다.
+  - scheduler job 분리와 job 등록 변경은 `Task 3.3`에서 다룬다.
+  - 전략별 cron 설정 추가는 `Task 3.2` 범위다.
+  - 따라서 이번 task만으로 runtime job 수가 늘어나지는 않는다.
+- 현재 blocker / mismatch:
+  - `AutoTrader.run_cycle()`와 `execute_cycle()`는 현재 항상 `settings.auto_trading.strategies` 전체를 순회한다.
+  - `AutoTradeCycleResult.configured_strategies`도 항상 전체 설정 전략을 담아, subset job 결과를 구분할 수 없다.
+  - `strategy_diagnostics` 역시 전체 전략 기준으로 채워져, 향후 trend 전용 job이 factor skip을 함께 남기게 된다.
+  - `main.build_strategy_cycle_runner()`와 `TradingRuntime.strategy_cycle_runner`는 아직 `(market, as_of)` 2-인자 계약이라 subset 전달 경로는 후속 task에서 이어 받아야 한다.
+- 고정할 실행 계약:
+  - `run_cycle(market, as_of, *, strategies: list[str] | None = None)`와 `execute_cycle(..., strategies: list[str] | None = None)` 형태로 subset 표면을 추가한다.
+  - `strategies is None`이면 기존과 동일하게 `settings.auto_trading.strategies` 전체를 사용해 backward compatibility를 유지한다.
+  - subset이 주어지면 signal generation, diagnostics, strategy instance build, exit evaluation, result metadata 모두 그 subset 기준으로만 동작해야 한다.
+  - subset에 없는 전략의 skip reason이나 diagnostics는 결과에 섞이지 않아야 한다.
+  - unsupported strategy name, duplicate strategy name, empty strategy list 처리 규칙은 명시적으로 고정해야 한다.
+- 구현 단계:
+  - `execution/auto_trader.py`에 전략 이름 목록을 정규화하는 helper를 추가한다.
+  - helper는 `None -> settings.auto_trading.strategies`, duplicate 제거, unsupported strategy 검증, empty subset reject를 담당하는 쪽이 가장 안전하다.
+  - `run_cycle()`는 정규화된 subset만 기준으로 strategy instance를 만들고 diagnostics를 기록하도록 바꾼다.
+  - `AutoTradeCycleResult.configured_strategies`는 실제 실행 대상 subset을 담도록 바꾼다.
+  - `positions`, `position_tickers`, `tickers_for_context`는 subset 전략 포지션만 기준으로 좁히는 안이 우선이다.
+  - `_build_exit_signals()`도 subset 전략 포지션에 대해서만 exit evaluation을 수행하도록 고정한다.
+  - `execute_cycle()`는 같은 subset을 `run_cycle()`에 그대로 전달해 submit path까지 동일 범위를 유지한다.
+  - helper/메서드 시그니처 추가 외의 runtime/main wiring 변경은 이번 task에 묶지 않는다.
+- 검토할 정책 포인트:
+  - 현재 open-order 차단은 ticker 단위라 subset 전략과 무관하게 동작한다.
+  - 이 규칙을 그대로 둘지, 전략별 job 분리 이후 `ticker + strategy` 단위로 좁힐지는 별도 판단이 필요하다.
+  - 이번 task 기본안은 기존 동작을 유지하고, 필요 시 문서에 open question으로만 남긴다.
+- 테스트 계획:
+  - `tests/test_execution/test_auto_trader.py`
+    - `strategies=["trend_following"]` 호출 시 dual/factor diagnostics가 결과에 포함되지 않는지 검증
+    - factor loader가 없는 상태에서도 `strategies=["trend_following"]` 호출은 factor skip을 남기지 않는지 검증
+    - `strategies=["factor_investing"]` 호출 시 factor strategy만 실행되고 canonical diagnostics가 유지되는지 검증
+    - existing factor position이 있어도 `strategies=["trend_following"]` 호출이 factor exit evaluation을 하지 않는지 검증
+    - duplicate/unsupported/empty subset 인자 처리 규칙 검증
+  - 필요 시 `tests/test_execution/test_runtime.py`
+    - 후속 task 전까지 runtime은 기존 2-인자 runner를 유지하므로, 기존 runtime 테스트가 깨지지 않는지 최소 회귀만 확인한다.
+- 완료 기준 구체화:
+  - subset 미지정 호출은 기존과 동일한 결과를 낸다.
+  - subset 지정 호출은 해당 전략만 signal generation / diagnostics / exit evaluation / order candidate 생성에 참여한다.
+  - `configured_strategies`와 `strategy_diagnostics`가 실제 subset과 일치한다.
+  - trend 전용 호출이 factor 전략을 건드리지 않고, factor 전용 호출이 trend/dual 전략을 건드리지 않는다.
+- 비목표:
+  - runtime job registration 변경
+  - strategy별 cron 설정 추가
+  - `main.py` runner 시그니처 확장
+  - open-order 차단 정책 변경
+- 구현 결과:
+  - `execution.auto_trader.AutoTrader.run_cycle()`에 `strategies: list[str] | None = None`를 추가했다.
+  - `execution.auto_trader.AutoTrader.execute_cycle()`도 같은 subset 인자를 받아 submit path까지 동일 범위를 유지하도록 반영했다.
+  - `AutoTrader` 내부에 strategy subset 정규화 helper를 추가해 `None -> configured strategies`, duplicate 제거, empty subset reject, settings 외 전략 reject 규칙을 고정했다.
+  - strategy instance build, diagnostics, `configured_strategies`, selected position lookup, exit evaluation이 모두 subset 기준으로만 동작하게 반영했다.
+  - `open_order_exists` 차단은 기존처럼 ticker 단위 정책을 유지했다.
+- 검증 결과:
+  - `tests/test_execution/test_auto_trader.py`
+    - trend-only subset이 factor/dual diagnostics를 섞지 않는지
+    - subset 기준 position scope / exit scope가 좁혀지는지
+    - duplicate subset dedupe, empty subset reject, settings 외 전략 reject
+    - `execute_cycle()`가 requested subset만 submit path에 반영하는지
+  - broader regression:
+    - `python -m pytest tests\test_execution\test_auto_trader.py -q`
+    - `python -m pytest tests\test_strategy tests\test_execution -q`
 
 #### Task 3.2 전략별 KR cron 설정 추가
 
@@ -650,10 +721,10 @@
 
 ## Recommended Next Task
 
-`Task 3.1`, 즉 특정 전략 subset만 실행할 수 있는 `AutoTrader` 계약을 추가하는 작업이다.
+`Task 3.2`, 즉 전략별 KR cron 설정을 추가하는 작업이다.
 
 이유:
 
-- `Task 1.x`, `Task 2.1`, `Task 2.2`, `Task 2.3`까지 끝나면서 factor strategy의 설정 표면, default builder, bootstrap loader entrypoint는 모두 고정됐다.
-- 다음 남은 큰 축은 전략별 스케줄 분리이고, 그 첫 단계가 `AutoTrader`에 strategy subset 실행 계약을 추가하는 일이다.
-- 이 계약이 있어야 `trend_following`과 리밸런싱 전략을 서로 다른 job으로 분리해도 기존 cycle/result 표면을 유지할 수 있다.
+- `Task 3.1`로 `AutoTrader` subset 실행 계약이 생겨 runtime이 전략별 job을 받을 준비는 됐다.
+- 하지만 현재 settings는 여전히 단일 `auto_trading.kr.schedule_cron`만 가지므로, 전략별 job을 등록할 수 있는 설정 표면이 없다.
+- 따라서 다음 직접 blocker는 전략별 KR cron 설정 추가다.
