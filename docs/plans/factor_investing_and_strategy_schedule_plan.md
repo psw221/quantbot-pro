@@ -951,12 +951,116 @@
 
 #### Task 5.3 검증 순서 실행
 
+- 상태:
+  - partial
+  - `2026-04-23 09:01 KST` 장중 기준 run-once smoke와 `trend_following` natural scheduled VTS smoke까지 확인했다.
+  - soak와 `dual_momentum`/`factor_investing`의 자연 scheduled validation은 아직 남아 있다.
 - 목표:
   - 구현 완료 후 검증 순서를 문서 기준으로 고정한다.
 - 대상:
   - 테스트 및 운영 검증 절차
 - 완료 기준:
   - `run-once smoke -> scheduled VTS smoke -> soak` 순서가 실제 검증 체크리스트로 남는다.
+
+세부 계획:
+
+- 범위 경계:
+  - 이번 task는 코드 변경이 아니라 운영 검증 순서와 acceptance evidence를 실제 실행 체크리스트로 고정하는 작업이다.
+  - 신규 기능 구현, runtime 설정 표면 추가, dashboard UI 변경은 이번 task 범위가 아니다.
+  - 결과물은 "어떤 순서로 무엇을 검증하고, 어떤 증거를 남기며, 어떤 조건에서 pass/fail로 볼지"를 명시한 문서 기준이어야 한다.
+- 현재 실행 윈도우:
+  - 현재 시각 기준 `2026-04-23 09:01 KST`에 KR 장중 진입을 확인했다.
+  - 따라서 오늘 바로 가능한 scheduled VTS smoke는 `trend_following` 경로다.
+  - 반면 오늘 `2026-04-23`은 리밸런싱 날짜가 아니므로 아래 자연 scheduled validation은 오늘 바로 발생하지 않는다.
+    - `dual_momentum` 다음 자연 실행 시각: `2026-05-01 09:00 KST`
+    - `factor_investing` 다음 자연 실행 시각: `2026-07-01 09:05 KST`
+  - 따라서 오늘 장중 검증 계획은:
+    - `trend_following`: scheduled VTS smoke
+    - `dual_momentum`: run-once smoke 또는 controlled scheduled validation
+    - `factor_investing`: run-once smoke 또는 controlled scheduled validation
+- 사전 점검 체크리스트:
+  - `env=vts`
+  - `auto_trading.enabled=true`
+  - KR 전략별 cron이 현재 설정과 일치하는지 확인
+  - dashboard와 system log가 최신 auto-trading diagnostics를 표시하는지 확인
+  - factor input source 또는 expected skip(`factor_input_unavailable`) 경로를 사전에 결정
+  - broker polling, token refresh, writer queue health가 `scheduled smoke`를 막지 않는지 확인
+- 검증 순서:
+  - 1. run-once smoke
+    - `trend_following`, `dual_momentum`, `factor_investing`를 strategy-local 기준으로 각각 1회 실행한다.
+    - 목적은 "전략별 subset 실행, diagnostics, order path, skip path"가 모두 현재 환경에서 깨지지 않는지 확인하는 것이다.
+    - `factor_investing`은 input source가 있으면 `input loaded`, 없으면 `skipped (factor_input_unavailable)`를 남기면 pass로 본다.
+  - 2. scheduled VTS smoke
+    - 오늘 `2026-04-23` 장중에는 `trend_following`의 자연 scheduled cycle을 우선 검증한다.
+    - acceptance:
+      - `market_closed`가 아닌 실제 장중 cycle log
+      - `Strategy Status`와 strategy rows가 dashboard에 반영
+      - blocked/stale/mismatch 없이 cycle completed 또는 strategy-local expected skip
+    - `dual_momentum`, `factor_investing`는 오늘 자연 scheduled time이 아니므로 별도 구분한다.
+      - controlled validation을 할 경우 임시 VTS-only schedule override 또는 one-off runner 실행 사실을 증거에 명시한다.
+      - 자연 scheduled validation은 각각 `2026-05-01`, `2026-07-01` 창에서 후속 확인 대상으로 남긴다.
+  - 3. soak
+    - 최소 1거래일 동안 `trend_following` scheduled cycle, polling freshness, dashboard diagnostics 안정성을 관찰한다.
+    - 리밸런싱 전략은 불필요한 장중 no-op를 남기지 않는지 함께 확인한다.
+- 증거 수집 기준:
+  - system log
+    - `strategy_name`
+    - `strategy_cycle_status`
+    - `strategy_skip_reason`
+    - `factor_input_available`
+  - dashboard
+    - `Strategy Status`
+    - strategy rows
+    - blocked/stale/mismatch 요약
+  - 주문 경로가 열린 경우
+    - `orders_submitted`
+    - `submitted_notional_krw`
+    - 기존 `order_executions -> trades -> positions` 경로 유지 여부
+- pass / fail 기준:
+  - pass
+    - run-once smoke가 세 전략 모두에서 expected result를 남긴다.
+    - 오늘 장중 `trend_following` scheduled smoke가 정상 cycle log를 남긴다.
+    - factor strategy는 input loaded 또는 explicit skip reason 중 하나로 관찰 가능하다.
+    - dashboard와 system log가 strategy-local 상태를 일관되게 보여준다.
+  - fail
+    - 장중인데도 `market_closed`가 반복된다.
+    - unexpected runner failure, `trading_blocked`, `writer_queue_degraded`, `polling_stale`가 검증을 막는다.
+    - strategy status와 log scalar가 서로 다르게 보인다.
+    - 리밸런싱 전략이 비의도적 장중 반복 no-op를 남긴다.
+- 문서 산출물:
+  - run-once smoke 결과
+  - 오늘 장중 scheduled VTS smoke 결과
+  - soak 시작/종료 시각
+  - deferred natural scheduled validation 항목
+    - `dual_momentum`: `2026-05-01 09:00 KST`
+    - `factor_investing`: `2026-07-01 09:05 KST`
+- 오늘 실행 결과 (`2026-04-23 KST`):
+  - 사전 상태:
+    - 기존 runtime PID는 `2026-04-21`에 시작된 구버전 프로세스였고, 오늘 09:00 cycle은 `polling_stale`로 skip됐다.
+    - 이후 health는 `normal`, `poll_stale=False`로 회복된 것을 확인했다.
+  - run-once smoke:
+    - `trend_following`
+      - read-only `run_cycle()` 기준 `status=completed`
+      - `signals_generated=0`, `orders=0`
+    - `dual_momentum`
+      - read-only `run_cycle()` 기준 `status=completed`
+      - `signals_generated=0`, `orders=0`
+    - `factor_investing`
+      - read-only `run_cycle()` 기준 `status=skipped`
+      - `skip_reason=factor_input_unavailable`
+  - scheduled VTS smoke:
+    - 기존 runtime 기준 `2026-04-23 09:15 KST` cycle은 completed였지만, strategy-aware diagnostics 이전 프로세스라 최신 scalar evidence로는 불충분했다.
+    - runtime을 `2026-04-23 09:16 KST`에 최신 코드로 재기동했다.
+    - 최신 runtime 기준 `2026-04-23 09:30 KST` natural scheduled smoke에서 아래 evidence를 확인했다.
+      - `strategy_name=trend_following`
+      - `strategy_cycle_status=completed`
+      - `strategy_status_label=trend_following: completed`
+      - `rejection_reason_summary=existing_position_reentry_blocked:1,no_position_to_sell:1`
+      - `orders_submitted=0`
+  - 미완료 항목:
+    - soak: 최소 1거래일 관찰 필요
+    - `dual_momentum` 자연 scheduled validation: `2026-05-01 09:00 KST`
+    - `factor_investing` 자연 scheduled validation: `2026-07-01 09:05 KST`
 
 ## Verification Plan
 
