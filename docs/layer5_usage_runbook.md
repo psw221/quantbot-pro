@@ -153,6 +153,32 @@ python scripts/restore_portfolio.py --apply --market ALL --snapshot-file <path>
   - `dr_restore_started`, `dr_restore_completed`, `dr_restore_failed`를 telegram으로 best-effort 발송한다.
 - direct fill/order/lot correction은 하지 않는다.
 
+## Manual Fill Repair
+브로커 앱/HTS에서 수동 매매가 발생해 내부 원장이 broker 실보유와 달라진 경우에만 사용한다.
+
+### Dry Run
+```powershell
+python -m scripts.repair_manual_fills --dry-run --market KR --ticker 005930 --strategy trend_following --snapshot-file <path>
+```
+
+### Apply
+```powershell
+python -m scripts.repair_manual_fills --apply --market KR --ticker 005930 --strategy trend_following --snapshot-file <path>
+```
+
+### Repair Rules
+- `restore_portfolio.py`는 mismatch 판단/기록 도구로 유지하고, 실제 원장 replay는 이 maintenance 경로에서만 수행한다.
+- 실행 전 조건
+  - auto-trading runtime이 완전히 꺼져 있어야 한다.
+  - 최신 broker snapshot file이 있어야 한다.
+  - target `ticker + strategy`에 active internal order가 없어야 한다.
+- `repair_manual_fills`
+  - broker daily fill 중 target ticker의 sell fill만 후보로 본다.
+  - candidate sell fill 총수량이 `internal_quantity - broker_quantity`와 정확히 같아야만 진행한다.
+  - synthetic internal sell order/fill을 replay해 `orders`, `order_executions`, `trades`, `position_lots`, `positions`를 표준 경로로 복구한다.
+  - 완료 후 `manual_restore` reconciliation을 다시 실행해 `reconciled`가 아니면 성공으로 보지 않는다.
+- 실행 후에는 dashboard에서 최근 `manual_restore`, `recent logs`, broker/internal quantity 일치 여부를 다시 확인한다.
+
 ### Snapshot File Minimum Fields
 - `positions`
 - `open_orders`

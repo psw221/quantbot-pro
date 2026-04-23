@@ -186,6 +186,14 @@ class FillProcessor:
         if position.quantity <= 0:
             position.quantity = 0
             position.avg_cost = 0
+        else:
+            remaining_cost_basis = session.scalar(
+                select(func.coalesce(func.sum(PositionLot.remaining_quantity * PositionLot.open_price), 0.0)).where(
+                    PositionLot.position_id == position.id,
+                    PositionLot.remaining_quantity > 0,
+                )
+            ) or 0.0
+            position.avg_cost = remaining_cost_basis / position.quantity
 
         if order.market == "US":
             session.add(

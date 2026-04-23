@@ -108,6 +108,16 @@ class ReconciliationService:
             )
 
         for snapshot in broker_positions:
+            existing_snapshot = session.scalar(
+                select(BrokerPosition.id).where(
+                    BrokerPosition.ticker == snapshot.ticker,
+                    BrokerPosition.market == snapshot.market,
+                    BrokerPosition.source_env == snapshot.source_env,
+                    BrokerPosition.snapshot_at == snapshot.snapshot_at,
+                )
+            )
+            if existing_snapshot is not None:
+                continue
             session.add(
                 BrokerPosition(
                     ticker=snapshot.ticker,

@@ -615,7 +615,15 @@ Phase 3 운영 기준:
 - `dry-run`은 내부 원장과 broker snapshot의 차이 계산만 수행하고 DB write를 하지 않습니다.
 - `apply`는 `trading_blocked=True` 확인 후에만 수행합니다.
 - `apply`는 `manual_restore` reconciliation run, broker snapshot 저장, system log 기록, optional portfolio snapshot upsert까지만 수행합니다.
-- direct fill insert, direct order correction, direct lot correction은 허용하지 않습니다.
+- direct fill insert, direct order correction, direct lot correction은 `restore_portfolio.py` 경로에서 허용하지 않습니다.
+- 수동 broker 주문/체결로 내부 원장이 어긋난 경우에는 전용 maintenance 경로 `repair_manual_fills.py`만 허용합니다.
+- `repair_manual_fills.py`는 아래 조건을 모두 만족해야 합니다.
+  - auto-trading runtime이 완전히 정지된 상태
+  - 현재 broker snapshot 파일이 확보된 상태
+  - target `ticker + strategy`의 active internal order가 0건인 상태
+  - broker sell fill 총수량이 `internal_quantity - broker_quantity`와 정확히 일치하는 상태
+  - replay 후 `manual_restore` reconciliation이 `reconciled`로 종료되는 상태
+- `repair_manual_fills.py`는 broker daily fill을 기준으로 synthetic internal sell order/fill을 replay해 `orders -> order_executions -> trades -> position_lots -> positions`를 같은 표준 경로로 복구합니다.
 
 ---
 
