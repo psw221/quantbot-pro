@@ -17,7 +17,7 @@ from main import build_strategy_cycle_runner
 from tests.test_execution.test_bootstrap import build_settings
 
 
-def test_default_kr_universe_loader_includes_existing_positions_and_fallback(tmp_path) -> None:
+def test_default_kr_universe_loader_prefers_index_constituents_and_keeps_existing_positions(tmp_path) -> None:
     settings = build_settings(tmp_path)
     init_db(settings)
     session_factory = get_session_factory()
@@ -38,12 +38,46 @@ def test_default_kr_universe_loader_includes_existing_positions_and_fallback(tmp
         )
         session.commit()
 
-    loader = build_default_kr_universe_loader(read_session_factory=session_factory)
+    loader = build_default_kr_universe_loader(
+        read_session_factory=session_factory,
+        index_ticker_loader=lambda as_of: ["373220", "207940", "005930"],
+    )
 
     universe = loader("KR", datetime(2026, 4, 20, tzinfo=UTC))
 
-    assert universe[0] == "251340"
-    assert universe[1:] == list(DEFAULT_KR_AUTO_TRADING_UNIVERSE)
+    assert universe == ["373220", "207940", "005930", "251340"]
+
+
+def test_default_kr_universe_loader_falls_back_when_index_constituents_are_unavailable(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    init_db(settings)
+    session_factory = get_session_factory()
+
+    with session_factory() as session:
+        session.add(
+            Position(
+                ticker="251340",
+                market="KR",
+                strategy="dual_momentum",
+                quantity=3,
+                avg_cost=12000,
+                current_price=12100,
+                highest_price=12200,
+                entry_date=datetime(2026, 4, 1, tzinfo=UTC),
+                updated_at=utc_now(),
+            )
+        )
+        session.commit()
+
+    loader = build_default_kr_universe_loader(
+        read_session_factory=session_factory,
+        index_ticker_loader=lambda as_of: [],
+    )
+
+    universe = loader("KR", datetime(2026, 4, 20, tzinfo=UTC))
+
+    assert universe[:3] == list(DEFAULT_KR_AUTO_TRADING_UNIVERSE)
+    assert universe[-1] == "251340"
 
 
 def test_pykrx_price_history_loader_normalizes_rows(monkeypatch) -> None:

@@ -381,6 +381,9 @@ Layer 5  모니터링 및 DR
   - `dual_momentum`: `0 9 1 * *`
   - `factor_investing`: `5 9 1 1,4,7,10 *`
 - 전략별 cron이 명시되지 않은 경우 `auto_trading.kr.schedule_cron`을 fallback으로 사용합니다.
+- 현재 저장소 기준 KR 기본 전략 universe는 `KOSPI 200` 구성종목을 기준으로 로드합니다.
+- 기존 KR 보유 종목은 지수 구성에서 빠졌더라도 같은 universe에 union으로 유지해 전략별 exit 평가가 끊기지 않게 합니다.
+- `KOSPI 200` 구성종목 source를 읽지 못하면 최소 fallback universe `005930`, `000660`, `035420`을 사용합니다.
 - Phase 4 KR scheduled auto-trading 기본 가드는 같은 `ticker + strategy` 포지션이 이미 열려 있으면 추가 매수 진입을 금지합니다.
 - 동일 종목의 추가 진입은 명시적 피라미딩 정책이 정의되기 전까지 허용하지 않습니다.
 - factor input source가 준비되지 않은 상태에서도 runtime은 유지하고, `factor_investing` 전략만 `skipped (factor_input_unavailable)` 진단 상태를 남기는 것을 정상 동작으로 취급합니다.

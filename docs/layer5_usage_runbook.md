@@ -72,6 +72,11 @@ streamlit run monitor/dashboard_app.py
   - 분기 초 리밸런싱 전략으로 본다.
 - strategy별 cron이 비어 있으면 `auto_trading.kr.schedule_cron` fallback을 사용한다.
 
+### KR Universe Defaults
+- KR 기본 전략 universe는 현재 `KOSPI 200` 구성종목을 기준으로 만든다.
+- 기존 KR 보유 종목은 지수 구성에서 빠졌더라도 같은 universe에 union으로 유지한다.
+- `KOSPI 200` source를 읽지 못하면 최소 fallback universe `005930`, `000660`, `035420`을 사용한다.
+
 ### Auto-Trading Diagnostics Interpretation
 - `Strategy Status`
   - 현재 최신 auto-trading log의 primary strategy 상태를 바로 보여준다.
@@ -131,6 +136,37 @@ python scripts/export_tax_report.py --year 2026 --month 4 --format json
   - `sell_date` calendar month 기준의 realized gain/loss, taxable gain, fees, taxes 집계다.
 - US 매도는 `tax_events` 우선, 누락 시 FIFO fallback을 사용한다.
 - KR 거래는 FX가 `null`일 수 있다.
+
+## Strategy Backtest
+### Dual Momentum
+```powershell
+python -m scripts.run_kr_rebalance_backtest --strategy dual_momentum --start-date 2024-01-01 --end-date 2026-04-01 --tickers 005930,000660,035420
+```
+
+### Factor Investing
+```powershell
+python -m scripts.run_kr_rebalance_backtest --strategy factor_investing --start-date 2024-01-01 --end-date 2026-04-01 --tickers 005930,000660,035420 --factor-file <path>
+```
+
+### Persist Result
+```powershell
+python -m scripts.run_kr_rebalance_backtest --strategy dual_momentum --start-date 2024-01-01 --end-date 2026-04-01 --tickers 005930,000660,035420 --persist
+```
+
+### Backtest Rules
+- 이 스크립트는 KR `dual_momentum`, `factor_investing` 전용이다.
+- price history는 기본적으로 `pykrx` loader를 사용한다.
+- `factor_investing`은 CSV/JSON factor snapshot file이 필요하다.
+- factor file은 최소 아래 컬럼을 가져야 한다.
+  - `date`
+  - `ticker`
+  - `value_score`
+  - `quality_score`
+  - `momentum_score`
+  - `low_vol_score`
+- factor snapshot 선택 기준은 `rebalance as_of` 이하에서 가장 최근 날짜다.
+- `--persist`가 없으면 결과를 콘솔 JSON으로만 출력하고 DB write를 하지 않는다.
+- `--persist`를 주면 `backtest_results`, `system_logs`에 저장한다.
 
 ## Restore Portfolio
 ### Dry Run

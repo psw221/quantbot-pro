@@ -6,3 +6,4 @@ SQLAlchemy>=2.0,<3
 python-dotenv>=1,<2
 pytest>=8,<9
 APScheduler>=3.10,<4
+pykrx>=1.0,<2

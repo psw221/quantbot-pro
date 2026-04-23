@@ -10,6 +10,7 @@ from execution.kis_api import KISApiClient
 from strategy.data_provider import FactorInputLoader
 
 
+KOSPI200_INDEX_TICKER = "1028"
 DEFAULT_KR_AUTO_TRADING_UNIVERSE = (
     "005930",  # Samsung Electronics
     "000660",  # SK hynix
@@ -20,8 +21,10 @@ DEFAULT_KR_AUTO_TRADING_UNIVERSE = (
 def build_default_kr_universe_loader(
     *,
     read_session_factory: Callable[[], Any] | None = None,
+    index_ticker_loader: Callable[[datetime], list[str]] | None = None,
 ) -> Callable[[str, datetime], list[str]]:
     session_factory = read_session_factory or get_read_session
+    resolved_index_ticker_loader = index_ticker_loader or build_pykrx_kr_index_ticker_loader()
 
     def loader(market: str, as_of: datetime) -> list[str]:
         if market.upper() != "KR":
@@ -38,8 +41,36 @@ def build_default_kr_universe_loader(
                 .all()
             )
 
-        tickers = [row[0] for row in rows if isinstance(row[0], str)]
-        return list(dict.fromkeys([*tickers, *DEFAULT_KR_AUTO_TRADING_UNIVERSE]))
+        held_tickers = [row[0].strip().upper() for row in rows if isinstance(row[0], str) and row[0].strip()]
+        index_tickers = resolved_index_ticker_loader(as_of)
+        base_universe = index_tickers or list(DEFAULT_KR_AUTO_TRADING_UNIVERSE)
+        return list(dict.fromkeys([*base_universe, *held_tickers]))
+
+    return loader
+
+
+def build_pykrx_kr_index_ticker_loader(
+    *,
+    index_ticker: str = KOSPI200_INDEX_TICKER,
+) -> Callable[[datetime], list[str]]:
+    def loader(as_of: datetime) -> list[str]:
+        del as_of
+
+        try:
+            from pykrx import stock  # type: ignore
+        except Exception:
+            return []
+
+        try:
+            raw_tickers = stock.get_index_portfolio_deposit_file(index_ticker)
+        except Exception:
+            return []
+
+        return [
+            ticker.strip().upper()
+            for ticker in raw_tickers
+            if isinstance(ticker, str) and ticker.strip()
+        ]
 
     return loader
 
