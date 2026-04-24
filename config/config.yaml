@@ -97,3 +97,9 @@ risk:
   trailing_stop: -0.10
   daily_max_loss: -0.02
   max_drawdown_limit: -0.15
+  kr_price_limit_pct: 0.30
+  kr_block_auction_entries: true
+  kr_opening_auction: "08:30-09:00"
+  kr_closing_auction: "15:20-15:30"
+  kr_short_sell_block_enabled: true
+  kr_settlement_cash_buffer_pct: 0.0

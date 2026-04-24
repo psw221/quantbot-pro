@@ -100,6 +100,22 @@ class RiskSettings(BaseModel):
     trailing_stop: float = -0.10
     daily_max_loss: float = -0.02
     max_drawdown_limit: float = -0.15
+    kr_price_limit_pct: float = 0.30
+    kr_block_auction_entries: bool = True
+    kr_opening_auction: str = "08:30-09:00"
+    kr_closing_auction: str = "15:20-15:30"
+    kr_short_sell_block_enabled: bool = True
+    kr_settlement_cash_buffer_pct: float = 0.0
+
+    @model_validator(mode="after")
+    def validate_kr_constraints(self) -> "RiskSettings":
+        if not 0 < self.kr_price_limit_pct < 1:
+            raise ConfigurationError("risk.kr_price_limit_pct must be between 0 and 1")
+        if not 0 <= self.kr_settlement_cash_buffer_pct < 1:
+            raise ConfigurationError("risk.kr_settlement_cash_buffer_pct must be between 0 and 1")
+        _validate_time_range(self.kr_opening_auction, field_name="risk.kr_opening_auction")
+        _validate_time_range(self.kr_closing_auction, field_name="risk.kr_closing_auction")
+        return self
 
 
 class AllocationSettings(BaseModel):
@@ -178,6 +194,23 @@ SUPPORTED_AUTO_TRADING_STRATEGIES = frozenset(
 def _validate_standard_cron(value: str, *, field_name: str) -> None:
     if len(value.split()) != 5:
         raise ConfigurationError(f"{field_name} must use standard 5-field cron syntax")
+
+
+def _validate_time_range(value: str, *, field_name: str) -> None:
+    parts = value.split("-")
+    if len(parts) != 2:
+        raise ConfigurationError(f"{field_name} must use HH:MM-HH:MM syntax")
+    for part in parts:
+        hour_minute = part.split(":")
+        if len(hour_minute) != 2:
+            raise ConfigurationError(f"{field_name} must use HH:MM-HH:MM syntax")
+        try:
+            hour = int(hour_minute[0])
+            minute = int(hour_minute[1])
+        except ValueError as exc:
+            raise ConfigurationError(f"{field_name} must use HH:MM-HH:MM syntax") from exc
+        if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+            raise ConfigurationError(f"{field_name} must use valid HH:MM values")
 
 
 class AutoTradingMarketSettings(BaseModel):

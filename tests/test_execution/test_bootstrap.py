@@ -103,6 +103,12 @@ def build_settings(tmp_path: Path, *, auto_trading: dict | None = None) -> Setti
             "trailing_stop": -0.10,
             "daily_max_loss": -0.02,
             "max_drawdown_limit": -0.15,
+            "kr_price_limit_pct": 0.30,
+            "kr_block_auction_entries": True,
+            "kr_opening_auction": "08:30-09:00",
+            "kr_closing_auction": "15:20-15:30",
+            "kr_short_sell_block_enabled": True,
+            "kr_settlement_cash_buffer_pct": 0.0,
         },
     }
     if auto_trading is not None:
@@ -128,6 +134,9 @@ def test_settings_accept_auto_trading_contract(tmp_path: Path) -> None:
         "dual_momentum": "0 9 1 * *",
         "factor_investing": "5 9 1 1,4,7,10 *",
     }
+    assert settings.risk.kr_price_limit_pct == 0.30
+    assert settings.risk.kr_opening_auction == "08:30-09:00"
+    assert settings.risk.kr_closing_auction == "15:20-15:30"
 
 
 def test_settings_accept_partial_strategy_specific_kr_crons_with_fallback(tmp_path: Path) -> None:

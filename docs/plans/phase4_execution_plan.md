@@ -25,6 +25,7 @@
 - `P4-06` live smoke validation은 실제 VTS 주문 제출, 체결 반영, reconciliation 정상 유지, 반복 진입 가드 검증까지 완료했다.
 - VTS soak 실행을 위해 `config/config.yaml`은 `auto_trading.enabled=true`, `monitor.telegram.enabled=true` 기준으로 정리하고, `scripts/start_auto_trading.ps1`, `scripts/stop_auto_trading.ps1`를 통해 `main.py` runtime을 백그라운드로 기동/종료할 수 있게 한다.
 - 장중 soak에서 확인된 반복 진입 리스크를 막기 위해, 같은 `ticker + strategy` 기보유 포지션에 대한 추가 `buy` 진입은 기본적으로 차단한다.
+- PRD 5.7 국내 시장 특수 제약은 `execution.market_constraints.MarketConstraintValidator`로 order candidate 생성 직전에 검증한다.
 
 ## Scope
 ### In Scope
@@ -173,6 +174,7 @@
 | P4-05A | main.py actual auto-trading wiring | done | `main.py` 실행만으로 KR VTS strategy cycle이 실제 `AutoTrader.execute_cycle(...)`까지 연결된다 |
 | P4-05B | P4-06 blocker hardening | done | broker cash fallback, cycle-scoped token reuse, price-context 보강으로 live cycle이 구조적 `data_unavailable` 없이 실행된다 |
 | P4-06 | VTS scheduled smoke validation | done | 장중 1회 이상 자동 진입 또는 청산이 기존 체결/원장 경로로 반영된다 |
+| P4-07 | KR market constraints | done | 가격제한폭, 동시호가, 공매도 방지, 단기과열/거래정지, T+2 현금 검증이 주문 후보 생성 전 적용된다 |
 
 ## Implementation Notes
 - `P4-01` 완료
@@ -222,6 +224,10 @@
   - KR VTS 장중에서 scheduler 기반 strategy cycle이 실제로 주문 제출과 기존 체결/원장 경로로 이어지는 것을 확인했다.
   - `order -> order_executions -> trades -> positions` 반영과 `reconciliation_runs.status=ok`, `mismatch_count=0` 유지가 live로 검증됐다.
   - VTS soak 중 발견된 반복 진입 이슈는 `existing_position_reentry_blocked` 가드 추가 후 runtime 재시작과 후속 cycle 검증으로 재발 방지까지 확인했다.
+- `P4-07` 완료
+  - `execution.market_constraints`를 추가해 KR 자동매매 주문 후보 생성 전 가격제한폭, 동시호가, 공매도 방지, 단기과열/거래정지, T+2 현금 검증을 수행한다.
+  - `AutoTrader.run_cycle()`은 risk/sizing 이후 market constraint를 호출하고, 실패 시 기존 `rejected_signals` 표면으로 reject reason을 남긴다.
+  - 새 설정 기본값은 `risk.kr_price_limit_pct=0.30`, 동시호가 차단 enabled, `08:30-09:00`/`15:20-15:30` KST, short-sell block enabled, settlement cash buffer 0%다.
 
 ## Test Plan
 - 단위 테스트

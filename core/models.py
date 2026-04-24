@@ -69,6 +69,8 @@ class EventType(str, Enum):
     EARNINGS = "earnings"
     VIX_HIGH = "vix_high"
     VKOSPI_HIGH = "vkospi_high"
+    KR_OVERHEATED = "kr_overheated"
+    KR_TRADING_HALT = "kr_trading_halt"
 
 
 @dataclass(slots=True)
@@ -202,6 +204,14 @@ class RiskDecision:
     reason: str = ""
     tags: list[str] = field(default_factory=list)
     scale_factor: float = 1.0
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class MarketConstraintDecision:
+    approved: bool
+    reason: str = ""
+    tags: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

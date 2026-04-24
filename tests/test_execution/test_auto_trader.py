@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from core.models import BrokerOrderResult
+from core.models import BrokerOrderResult, EventFlag, EventType
 from core.models import FactorSnapshot, PositionSnapshot, PriceBar, Signal
 from data.database import Order, PortfolioSnapshot, Position, Signal as SignalRow, get_session_factory, init_db, utc_now
 from execution.auto_trader import AutoTrader
@@ -1187,6 +1187,110 @@ def test_auto_trader_rejects_candidate_when_latest_price_is_missing(tmp_path) ->
     assert len(result.rejected_signals) == 1
     assert result.rejected_signals[0].reason == "data_unavailable"
     assert result.rejected_signals[0].detail == "latest_price_missing"
+
+
+def test_auto_trader_applies_kr_market_constraints_before_order_candidate(tmp_path) -> None:
+    settings = build_settings(
+        tmp_path,
+        auto_trading={"enabled": True, "strategies": ["dual_momentum"]},
+    )
+    init_db(settings)
+    session_factory = get_session_factory()
+    as_of = datetime(2026, 5, 1, tzinfo=UTC)
+
+    with session_factory() as session:
+        session.add(
+            PortfolioSnapshot(
+                snapshot_date=as_of - timedelta(days=1),
+                total_value_krw=10_000_000,
+                cash_krw=10_000_000,
+                domestic_value_krw=0,
+                overseas_value_krw=0,
+                usd_krw_rate=1350,
+                daily_return=0,
+                cumulative_return=0,
+                drawdown=0,
+                max_drawdown=0,
+                position_count=0,
+                created_at=utc_now(),
+            )
+        )
+        session.commit()
+
+    provider = KRStrategyDataProvider(
+        price_history_loader=lambda tickers, requested_as_of, lookback_days: {
+            "005930": _kr_bars("005930", [100_000, 131_000])
+        },
+        settings=settings,
+    )
+    trader = AutoTrader(
+        data_provider=provider,
+        universe_loader=lambda market, timestamp: ["005930"],
+        strategy_builders={"dual_momentum": lambda settings, provider: StubEntryStrategy("dual_momentum")},
+        settings=settings,
+    )
+
+    result = trader.run_cycle("KR", as_of)
+
+    assert result.order_candidates == []
+    assert len(result.rejected_signals) == 1
+    assert result.rejected_signals[0].reason == "kr_price_limit"
+
+
+def test_auto_trader_rejects_overheated_event_before_order_candidate(tmp_path) -> None:
+    settings = build_settings(
+        tmp_path,
+        auto_trading={"enabled": True, "strategies": ["dual_momentum"]},
+    )
+    init_db(settings)
+    session_factory = get_session_factory()
+    as_of = datetime(2026, 5, 1, tzinfo=UTC)
+
+    with session_factory() as session:
+        session.add(
+            PortfolioSnapshot(
+                snapshot_date=as_of - timedelta(days=1),
+                total_value_krw=10_000_000,
+                cash_krw=10_000_000,
+                domestic_value_krw=0,
+                overseas_value_krw=0,
+                usd_krw_rate=1350,
+                daily_return=0,
+                cumulative_return=0,
+                drawdown=0,
+                max_drawdown=0,
+                position_count=0,
+                created_at=utc_now(),
+            )
+        )
+        session.commit()
+
+    provider = KRStrategyDataProvider(
+        price_history_loader=lambda tickers, requested_as_of, lookback_days: {
+            "005930": _kr_bars("005930", [100_000, 101_000])
+        },
+        settings=settings,
+    )
+    provider.get_event_flags = lambda tickers, market, requested_as_of: [
+        EventFlag(
+            event_type=EventType.KR_OVERHEATED,
+            market="KR",
+            ticker="005930",
+            metadata={"action": "exclude_universe"},
+        )
+    ]
+    trader = AutoTrader(
+        data_provider=provider,
+        universe_loader=lambda market, timestamp: ["005930"],
+        strategy_builders={"dual_momentum": lambda settings, provider: StubEntryStrategy("dual_momentum")},
+        settings=settings,
+    )
+
+    result = trader.run_cycle("KR", as_of)
+
+    assert result.order_candidates == []
+    assert len(result.rejected_signals) == 1
+    assert result.rejected_signals[0].reason == "kr_overheated"
 
 
 def test_auto_trader_execute_cycle_persists_signal_and_submits_order(tmp_path) -> None:

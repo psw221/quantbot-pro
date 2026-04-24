@@ -9,6 +9,7 @@ from typing import Any
 from core.models import EventFlag, PositionSnapshot, RiskDecision, Signal, SizingDecision, SizingInput
 from core.settings import Settings, get_settings
 from data.database import Order, PortfolioSnapshot, Position, get_read_session
+from execution.market_constraints import MarketConstraintInput, MarketConstraintValidator
 from execution.order_manager import OrderManager
 from risk.position_sizer import PositionSizer
 from risk.risk_manager import RiskManager
@@ -144,6 +145,7 @@ class AutoTrader:
         risk_manager: RiskManager | None = None,
         position_sizer: PositionSizer | None = None,
         order_manager: OrderManager | None = None,
+        market_constraint_validator: MarketConstraintValidator | None = None,
         cash_available_loader: CashAvailableLoader | None = None,
         read_session_factory: Callable[[], Any] | None = None,
         strategy_builders: Mapping[str, StrategyBuilder] | None = None,
@@ -156,6 +158,7 @@ class AutoTrader:
         self.risk_manager = risk_manager or RiskManager(self.settings)
         self.position_sizer = position_sizer or PositionSizer(self.settings)
         self.order_manager = order_manager
+        self.market_constraint_validator = market_constraint_validator or MarketConstraintValidator(self.settings)
         self.cash_available_loader = cash_available_loader
         self.read_session_factory = read_session_factory or get_read_session
         self.strategy_builders = dict(strategy_builders or _default_strategy_builders())
@@ -204,7 +207,7 @@ class AutoTrader:
                 )
         skipped_strategies = {item.strategy_name for item in strategy_diagnostics if item.status == "skipped"}
 
-        latest_prices, volatilities = self._load_price_context(tickers_for_context, normalized_market, as_of_utc)
+        latest_prices, previous_closes, volatilities = self._load_price_context(tickers_for_context, normalized_market, as_of_utc)
         exit_signals, exit_rejections = self._build_exit_signals(
             positions=positions,
             latest_prices=latest_prices,
@@ -330,6 +333,29 @@ class AutoTrader:
                     AutoTradeSignalRejection(
                         signal=signal,
                         reason="unsupported_action",
+                    )
+                )
+                continue
+
+            constraint_decision = self.market_constraint_validator.evaluate(
+                MarketConstraintInput(
+                    signal=signal,
+                    quantity=sizing_decision.quantity,
+                    current_price=current_price,
+                    previous_close=previous_closes.get(signal.ticker),
+                    as_of=as_of_utc,
+                    position=position,
+                    order_type="market",
+                    price=None,
+                    cash_available=cash_available,
+                    event_flags=applicable_event_flags,
+                )
+            )
+            if not constraint_decision.approved:
+                result.rejected_signals.append(
+                    AutoTradeSignalRejection(
+                        signal=signal,
+                        reason=constraint_decision.reason,
                     )
                 )
                 continue
@@ -570,9 +596,9 @@ class AutoTrader:
         tickers: list[str],
         market: str,
         as_of: datetime,
-    ) -> tuple[dict[str, float], dict[str, float]]:
+    ) -> tuple[dict[str, float], dict[str, float], dict[str, float]]:
         if not tickers:
-            return {}, {}
+            return {}, {}, {}
         histories = self.data_provider.get_price_history(
             tickers,
             market,  # type: ignore[arg-type]
@@ -580,6 +606,7 @@ class AutoTrader:
             PRICE_CONTEXT_LOOKBACK_DAYS,
         )
         latest_prices: dict[str, float] = {}
+        previous_closes: dict[str, float] = {}
         volatilities: dict[str, float] = {}
         for ticker, bars in histories.items():
             if not bars:
@@ -589,8 +616,10 @@ class AutoTrader:
             if not closes:
                 continue
             latest_prices[ticker] = closes[-1]
+            if len(closes) >= 2:
+                previous_closes[ticker] = closes[-2]
             volatilities[ticker] = _estimate_annualized_volatility(closes)
-        return latest_prices, volatilities
+        return latest_prices, previous_closes, volatilities
 
     def _build_exit_signals(
         self,
