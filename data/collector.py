@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+import json
+from pathlib import Path
 from typing import Any
 
 from auth.token_manager import TokenManager
@@ -11,6 +13,7 @@ from strategy.data_provider import FactorInputLoader
 
 
 KOSPI200_INDEX_TICKER = "1028"
+KOSPI200_CACHE_PATH = Path(__file__).resolve().parent / "kospi200_constituents.json"
 DEFAULT_KR_AUTO_TRADING_UNIVERSE = (
     "005930",  # Samsung Electronics
     "000660",  # SK hynix
@@ -22,9 +25,11 @@ def build_default_kr_universe_loader(
     *,
     read_session_factory: Callable[[], Any] | None = None,
     index_ticker_loader: Callable[[datetime], list[str]] | None = None,
+    cache_ticker_loader: Callable[[], list[str]] | None = None,
 ) -> Callable[[str, datetime], list[str]]:
     session_factory = read_session_factory or get_read_session
     resolved_index_ticker_loader = index_ticker_loader or build_pykrx_kr_index_ticker_loader()
+    resolved_cache_ticker_loader = cache_ticker_loader or build_cached_kr_index_ticker_loader()
 
     def loader(market: str, as_of: datetime) -> list[str]:
         if market.upper() != "KR":
@@ -43,7 +48,8 @@ def build_default_kr_universe_loader(
 
         held_tickers = [row[0].strip().upper() for row in rows if isinstance(row[0], str) and row[0].strip()]
         index_tickers = resolved_index_ticker_loader(as_of)
-        base_universe = index_tickers or list(DEFAULT_KR_AUTO_TRADING_UNIVERSE)
+        cache_tickers = [] if index_tickers else resolved_cache_ticker_loader()
+        base_universe = index_tickers or cache_tickers or list(DEFAULT_KR_AUTO_TRADING_UNIVERSE)
         return list(dict.fromkeys([*base_universe, *held_tickers]))
 
     return loader
@@ -71,6 +77,34 @@ def build_pykrx_kr_index_ticker_loader(
             for ticker in raw_tickers
             if isinstance(ticker, str) and ticker.strip()
         ]
+
+    return loader
+
+
+def build_cached_kr_index_ticker_loader(
+    *,
+    cache_path: str | Path = KOSPI200_CACHE_PATH,
+) -> Callable[[], list[str]]:
+    resolved_path = Path(cache_path)
+
+    def loader() -> list[str]:
+        try:
+            payload = json.loads(resolved_path.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+
+        raw_tickers = payload.get("tickers") if isinstance(payload, dict) else payload
+        if not isinstance(raw_tickers, list):
+            return []
+
+        tickers: list[str] = []
+        for raw_ticker in raw_tickers:
+            if not isinstance(raw_ticker, str):
+                continue
+            ticker = raw_ticker.strip().upper()
+            if len(ticker) == 6 and ticker.isdigit():
+                tickers.append(ticker)
+        return list(dict.fromkeys(tickers))
 
     return loader
 

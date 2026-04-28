@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import main as main_module
 from data.collector import (
     DEFAULT_KR_AUTO_TRADING_UNIVERSE,
+    build_cached_kr_index_ticker_loader,
     build_default_kr_factor_input_loader,
     build_default_kr_universe_loader,
     build_kis_kr_price_history_loader,
@@ -41,6 +42,7 @@ def test_default_kr_universe_loader_prefers_index_constituents_and_keeps_existin
     loader = build_default_kr_universe_loader(
         read_session_factory=session_factory,
         index_ticker_loader=lambda as_of: ["373220", "207940", "005930"],
+        cache_ticker_loader=lambda: ["000660"],
     )
 
     universe = loader("KR", datetime(2026, 4, 20, tzinfo=UTC))
@@ -48,7 +50,7 @@ def test_default_kr_universe_loader_prefers_index_constituents_and_keeps_existin
     assert universe == ["373220", "207940", "005930", "251340"]
 
 
-def test_default_kr_universe_loader_falls_back_when_index_constituents_are_unavailable(tmp_path) -> None:
+def test_default_kr_universe_loader_uses_cache_when_index_constituents_are_unavailable(tmp_path) -> None:
     settings = build_settings(tmp_path)
     init_db(settings)
     session_factory = get_session_factory()
@@ -72,12 +74,41 @@ def test_default_kr_universe_loader_falls_back_when_index_constituents_are_unava
     loader = build_default_kr_universe_loader(
         read_session_factory=session_factory,
         index_ticker_loader=lambda as_of: [],
+        cache_ticker_loader=lambda: ["005930", "000660", "005930"],
     )
 
     universe = loader("KR", datetime(2026, 4, 20, tzinfo=UTC))
 
-    assert universe[:3] == list(DEFAULT_KR_AUTO_TRADING_UNIVERSE)
+    assert universe[:2] == ["005930", "000660"]
     assert universe[-1] == "251340"
+
+
+def test_default_kr_universe_loader_falls_back_to_minimum_universe_when_index_and_cache_are_unavailable(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    init_db(settings)
+    session_factory = get_session_factory()
+
+    loader = build_default_kr_universe_loader(
+        read_session_factory=session_factory,
+        index_ticker_loader=lambda as_of: [],
+        cache_ticker_loader=lambda: [],
+    )
+
+    universe = loader("KR", datetime(2026, 4, 20, tzinfo=UTC))
+
+    assert universe == list(DEFAULT_KR_AUTO_TRADING_UNIVERSE)
+
+
+def test_cached_kr_index_ticker_loader_reads_static_kospi200_cache(tmp_path) -> None:
+    cache_path = tmp_path / "kospi200.json"
+    cache_path.write_text(
+        '{"tickers":["005930"," 000660 ","bad","0126Z0","005930",123]}',
+        encoding="utf-8",
+    )
+
+    loader = build_cached_kr_index_ticker_loader(cache_path=cache_path)
+
+    assert loader() == ["005930", "000660"]
 
 
 def test_pykrx_price_history_loader_normalizes_rows(monkeypatch) -> None:

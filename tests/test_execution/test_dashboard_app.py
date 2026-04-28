@@ -9,7 +9,9 @@ from monitor.dashboard_app import (
     build_auto_trading_diagnostics,
     build_strategy_budget_summary,
     build_tax_dashboard_summary,
+    render_broker_positions_panel,
     render_dashboard,
+    render_strategy_budget_panel,
 )
 from tests.test_execution.test_bootstrap import build_settings
 
@@ -202,6 +204,17 @@ def test_render_dashboard_outputs_layer5_skeleton_sections(tmp_path) -> None:
                 "created_at": datetime(2026, 4, 21, 13, 15, tzinfo=timezone.utc),
             }
         ],
+        latest_broker_positions=[
+            {
+                "ticker": "005930",
+                "market": "KR",
+                "quantity": 1,
+                "avg_cost": 217583.333,
+                "currency": "KRW",
+                "snapshot_at": datetime(2026, 4, 21, 13, 10, tzinfo=timezone.utc),
+                "source_env": "vts",
+            }
+        ],
     )
     fake_st = FakeStreamlit()
 
@@ -212,6 +225,7 @@ def test_render_dashboard_outputs_layer5_skeleton_sections(tmp_path) -> None:
         "Operations Summary",
         "Auto-Trading Diagnostics",
         "Strategy Budget",
+        "Broker Positions",
         "Tax Summary",
         "Health",
         "Open Orders",
@@ -440,6 +454,146 @@ def test_build_strategy_budget_summary_uses_latest_snapshot_cash(tmp_path) -> No
     assert rows["dual_momentum"]["target_notional_krw"] == 1_401_605.53
     assert rows["dual_momentum"]["candidate_cap_krw"] == 432_594.3
     assert rows["factor_investing"]["active_in_auto_trading"] is False
+
+
+def test_render_strategy_budget_panel_reports_broker_cash_fallback(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    snapshot = DashboardSnapshot(
+        generated_at=datetime(2026, 4, 21, 14, 0, tzinfo=timezone.utc),
+        health=HealthSnapshot(
+            status=RuntimeHealthStatus.NORMAL,
+            trading_blocked=False,
+            scheduler_running=False,
+            writer_queue_running=False,
+            writer_queue_degraded=False,
+            queue_depth=0,
+            token_stale=False,
+            poll_stale=False,
+            last_token_refresh_at=None,
+            last_poll_success_at=None,
+            consecutive_poll_failures=0,
+            last_error=None,
+            details={"status_source": "external_canonical"},
+        ),
+        open_orders=[],
+        recent_trades=[],
+        latest_portfolio_snapshot=None,
+        reconciliation_summary={},
+        recent_manual_restores=[],
+        recent_backtests=[],
+        operational_summary={},
+        recent_logs=[],
+        latest_broker_cash={"cash_available": 9_522_830.0},
+    )
+    fake_st = FakeStreamlit()
+
+    render_strategy_budget_panel(snapshot, st_module=fake_st, settings=settings)
+
+    info_messages = [value for kind, value in fake_st.calls if kind == "info"]
+    metrics = [value for kind, value in fake_st.calls if kind == "metric"]
+    assert "Using broker polling cash fallback because no latest portfolio snapshot is available." in info_messages
+    assert "No latest portfolio snapshot available; strategy budget uses 0 KRW cash until snapshot data exists." not in info_messages
+    assert any(metric["label"] == "Cash KRW" and metric["value"] == "9,522,830 KRW" for metric in metrics)
+
+
+def test_render_strategy_budget_panel_reports_missing_cash(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    snapshot = DashboardSnapshot(
+        generated_at=datetime(2026, 4, 21, 14, 0, tzinfo=timezone.utc),
+        health=HealthSnapshot(
+            status=RuntimeHealthStatus.NORMAL,
+            trading_blocked=False,
+            scheduler_running=False,
+            writer_queue_running=False,
+            writer_queue_degraded=False,
+            queue_depth=0,
+            token_stale=False,
+            poll_stale=False,
+            last_token_refresh_at=None,
+            last_poll_success_at=None,
+            consecutive_poll_failures=0,
+            last_error=None,
+            details={"status_source": "external_canonical"},
+        ),
+        open_orders=[],
+        recent_trades=[],
+        latest_portfolio_snapshot=None,
+        reconciliation_summary={},
+        recent_manual_restores=[],
+        recent_backtests=[],
+        operational_summary={},
+        recent_logs=[],
+    )
+    fake_st = FakeStreamlit()
+
+    render_strategy_budget_panel(snapshot, st_module=fake_st, settings=settings)
+
+    info_messages = [value for kind, value in fake_st.calls if kind == "info"]
+    assert "No latest portfolio snapshot available; strategy budget uses 0 KRW cash until snapshot data exists." in info_messages
+
+
+def test_render_broker_positions_panel_outputs_rows_and_empty_message() -> None:
+    snapshot = DashboardSnapshot(
+        generated_at=datetime(2026, 4, 21, 14, 0, tzinfo=timezone.utc),
+        health=HealthSnapshot(
+            status=RuntimeHealthStatus.NORMAL,
+            trading_blocked=False,
+            scheduler_running=False,
+            writer_queue_running=False,
+            writer_queue_degraded=False,
+            queue_depth=0,
+            token_stale=False,
+            poll_stale=False,
+            last_token_refresh_at=None,
+            last_poll_success_at=None,
+            consecutive_poll_failures=0,
+            last_error=None,
+            details={"status_source": "external_canonical"},
+        ),
+        open_orders=[],
+        recent_trades=[],
+        latest_portfolio_snapshot=None,
+        reconciliation_summary={},
+        recent_manual_restores=[],
+        recent_backtests=[],
+        operational_summary={},
+        recent_logs=[],
+        latest_broker_positions=[
+            {
+                "ticker": "005930",
+                "market": "KR",
+                "quantity": 1,
+                "avg_cost": 217583.333,
+                "currency": "KRW",
+                "snapshot_at": datetime(2026, 4, 21, 13, 10, tzinfo=timezone.utc),
+                "source_env": "vts",
+            }
+        ],
+    )
+    fake_st = FakeStreamlit()
+    empty_st = FakeStreamlit()
+
+    render_broker_positions_panel(snapshot, st_module=fake_st)
+    render_broker_positions_panel(
+        DashboardSnapshot(
+            generated_at=snapshot.generated_at,
+            health=snapshot.health,
+            open_orders=[],
+            recent_trades=[],
+            latest_portfolio_snapshot=None,
+            reconciliation_summary={},
+            recent_manual_restores=[],
+            recent_backtests=[],
+            operational_summary={},
+            recent_logs=[],
+        ),
+        st_module=empty_st,
+    )
+
+    assert any(kind == "caption" and value == "Broker account snapshot, separate from strategy positions." for kind, value in fake_st.calls)
+    dataframe_calls = [value for kind, value in fake_st.calls if kind == "dataframe"]
+    assert dataframe_calls[0]["value"][0]["ticker"] == "005930"
+    assert any(kind == "info" and value == "No broker positions snapshot available" for kind, value in empty_st.calls)
 
 
 def test_build_tax_dashboard_summary_returns_total_and_by_market_rows() -> None:

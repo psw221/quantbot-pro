@@ -36,6 +36,7 @@ streamlit run monitor/dashboard_app.py
 - `Recent Logs`
 - `Auto-Trading Diagnostics`
 - `Strategy Budget`
+- `Broker Positions`
 - `Tax Summary`
 
 ### What To Check First
@@ -53,12 +54,16 @@ streamlit run monitor/dashboard_app.py
   - `Rejected`
   - `Submitted`
   - `Top Rejections`
-  - strategy rows
 - `Strategy Budget`
-  - `Cash KRW`
+  - `Cash KRW`는 latest portfolio snapshot을 우선 사용한다.
+  - portfolio snapshot이 없으면 broker polling reconciliation의 `cash_available` fallback을 사용한다.
+  - strategy rows
   - `KR Budget`
   - `Single-Stock Cap`
   - `Cycle Cap`
+- `Broker Positions`
+  - 최신 broker account snapshot 기준 보유수량/평균단가를 확인한다.
+  - 이 패널은 내부 strategy positions와 별도다.
 
 ### KR Strategy Schedule Defaults
 - `trend_following`
@@ -75,7 +80,9 @@ streamlit run monitor/dashboard_app.py
 ### KR Universe Defaults
 - KR 기본 전략 universe는 현재 `KOSPI 200` 구성종목을 기준으로 만든다.
 - 기존 KR 보유 종목은 지수 구성에서 빠졌더라도 같은 universe에 union으로 유지한다.
-- `KOSPI 200` source를 읽지 못하면 최소 fallback universe `005930`, `000660`, `035420`을 사용한다.
+- `KOSPI 200` live source를 읽지 못하면 `data/kospi200_constituents.json` 정적 캐시를 사용한다.
+- live source와 정적 캐시를 모두 읽지 못하면 최소 fallback universe `005930`, `000660`, `035420`을 사용한다.
+- 정적 캐시는 6자리 KRX 종목코드만 사용하며, index 정기 변경 이후에는 운영자가 파일을 갱신한다.
 
 ### Auto-Trading Diagnostics Interpretation
 - `Strategy Status`

@@ -28,6 +28,7 @@ def render_dashboard(
     render_operations_summary_panel(snapshot, st_module=st_module)
     render_auto_trading_diagnostics_panel(snapshot, st_module=st_module)
     render_strategy_budget_panel(snapshot, st_module=st_module, settings=resolved_settings)
+    render_broker_positions_panel(snapshot, st_module=st_module)
     render_tax_dashboard_summary_panel(snapshot, st_module=st_module, tax_calculator=resolved_tax_calculator)
 
     st_module.subheader("Health")
@@ -151,7 +152,9 @@ def render_strategy_budget_panel(snapshot: DashboardSnapshot, *, st_module: Any,
     for index, (label, value) in enumerate(cards):
         columns[index % len(columns)].metric(label=label, value=value)
 
-    if not summary["snapshot_available"]:
+    if summary.get("cash_source") == "broker_polling":
+        st_module.info("Using broker polling cash fallback because no latest portfolio snapshot is available.")
+    elif summary.get("cash_source") == "missing":
         st_module.info("No latest portfolio snapshot available; strategy budget uses 0 KRW cash until snapshot data exists.")
 
     st_module.dataframe(_normalize_rows(summary["strategy_rows"]), use_container_width=True)
@@ -159,6 +162,16 @@ def render_strategy_budget_panel(snapshot: DashboardSnapshot, *, st_module: Any,
 
 def build_strategy_budget_summary(snapshot: DashboardSnapshot, *, settings: Settings) -> dict[str, Any]:
     return snapshot.strategy_budget_summary or build_snapshot_strategy_budget_summary(snapshot, settings=settings)
+
+
+def render_broker_positions_panel(snapshot: DashboardSnapshot, *, st_module: Any) -> None:
+    st_module.subheader("Broker Positions")
+    st_module.caption("Broker account snapshot, separate from strategy positions.")
+    _render_rows(
+        st_module,
+        rows=snapshot.latest_broker_positions,
+        empty_message="No broker positions snapshot available",
+    )
 
 
 def render_tax_dashboard_summary_panel(

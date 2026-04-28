@@ -158,9 +158,9 @@ def test_trading_runtime_registers_expected_jobs(tmp_path) -> None:
         TOKEN_REFRESH_JOB_ID,
         BROKER_POLL_JOB_ID,
         PRE_CLOSE_CANCEL_KR_JOB_ID,
-        PRE_CLOSE_CANCEL_US_JOB_ID,
         HEALTHCHECK_JOB_ID,
     }
+    assert PRE_CLOSE_CANCEL_US_JOB_ID not in jobs
 
 
 def test_trading_runtime_registers_strategy_cycle_jobs_when_auto_trading_enabled(tmp_path) -> None:
@@ -632,6 +632,50 @@ def test_trading_runtime_skips_polling_when_market_closed(tmp_path) -> None:
         runtime.stop()
 
     assert token_manager.calls == 0
+    assert snapshot["consecutive_poll_failures"] == 0
+
+
+def test_trading_runtime_skips_us_polling_when_us_not_configured(tmp_path) -> None:
+    class DummyTokenManager:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def get_valid_token(self, env):
+            self.calls += 1
+            return "token"
+
+    class FailingApiClient:
+        def get_account_snapshot(self, access_token):
+            raise AssertionError("US polling should not call broker API when US is not configured")
+
+    class FailingReconciliationService:
+        def reconcile_snapshot(self, snapshot, *, missing_fills=None):
+            raise AssertionError("US polling should not reconcile when US is not configured")
+
+    settings = build_settings(tmp_path)
+    writer_queue = WriterQueue()
+    token_manager = DummyTokenManager()
+    notifier = RecordingTelegramNotifier()
+    runtime = TradingRuntime(
+        writer_queue=writer_queue,
+        token_manager=token_manager,
+        api_client=FailingApiClient(),
+        reconciliation_service=FailingReconciliationService(),
+        settings=settings,
+        time_provider=lambda: datetime(2026, 4, 16, 1, 0, tzinfo=KST),
+        telegram_notifier=notifier,
+    )
+
+    try:
+        runtime.start()
+        token_manager.calls = 0
+        runtime._run_broker_poll_job()
+        snapshot = runtime.health_snapshot()
+    finally:
+        runtime.stop()
+
+    assert token_manager.calls == 0
+    assert notifier.events == []
     assert snapshot["consecutive_poll_failures"] == 0
 
 

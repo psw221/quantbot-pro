@@ -367,13 +367,13 @@ Layer 5  모니터링 및 DR
 운영 기본값:
 
 - 스케줄러는 `in-process APScheduler`로 구동합니다.
-- polling은 시장 세션 인지형으로 동작하며, 현재 세션 우선순위는 `KR -> US`입니다.
+- polling은 시장 세션 인지형으로 동작하되 `auto_trading.markets`에 설정된 시장만 대상으로 하며, 현재 세션 우선순위는 `KR -> US`입니다.
 - 현재 저장소 기준 KR polling은 `주식일별주문체결조회`를 사용해 브로커 cumulative fill을 `ExecutionFill` delta로 자동 변환한 뒤 `fill_processor`에 반영합니다.
 - 현재 저장소 기준 KR VTS polling에서는 `미체결/정정취소가능주문조회` 미지원 응답을 adapter에서 empty `open_orders` snapshot으로 흡수합니다.
 - 현재 저장소 기준 US 자동 fill ingestion은 미구현이며, KR 경로만 broker fill auto-sync를 지원합니다.
 - polling의 read-only broker query는 rate limit / temporary broker error에 대해 짧은 재시도를 수행한 뒤에만 polling failure로 집계합니다.
 - polling 예외는 연속 실패 횟수로 관리하고 3회 연속 실패 시 신규 주문을 차단합니다.
-- 장 종료 전 미체결 취소는 국내 `15:25 KST`, 미국 `05:55 KST` 기본값을 사용합니다.
+- 장 종료 전 미체결 취소는 설정된 시장에 대해서만 등록하며, 기본 시각은 국내 `15:25 KST`, 미국 `05:55 KST`입니다.
 - 국내 장 종료 전 취소는 브로커 주문번호 외에 주문조직번호(`broker_order_orgno`)까지 저장된 주문만 브로커 취소 대상으로 사용합니다.
 - 현재 저장소 기준 KR scheduled auto-trading은 단일 시장 job이 아니라 전략별 job으로 분리해 실행합니다.
 - KR 전략별 기본 스케줄은 아래를 사용합니다.
@@ -383,7 +383,8 @@ Layer 5  모니터링 및 DR
 - 전략별 cron이 명시되지 않은 경우 `auto_trading.kr.schedule_cron`을 fallback으로 사용합니다.
 - 현재 저장소 기준 KR 기본 전략 universe는 `KOSPI 200` 구성종목을 기준으로 로드합니다.
 - 기존 KR 보유 종목은 지수 구성에서 빠졌더라도 같은 universe에 union으로 유지해 전략별 exit 평가가 끊기지 않게 합니다.
-- `KOSPI 200` 구성종목 source를 읽지 못하면 최소 fallback universe `005930`, `000660`, `035420`을 사용합니다.
+- `KOSPI 200` live source를 읽지 못하면 `data/kospi200_constituents.json` 정적 캐시를 사용합니다.
+- live source와 정적 캐시를 모두 읽지 못하면 최소 fallback universe `005930`, `000660`, `035420`을 사용합니다.
 - Phase 4 KR scheduled auto-trading 기본 가드는 같은 `ticker + strategy` 포지션이 이미 열려 있으면 추가 매수 진입을 금지합니다.
 - 동일 종목의 추가 진입은 명시적 피라미딩 정책이 정의되기 전까지 허용하지 않습니다.
 - factor input source가 준비되지 않은 상태에서도 runtime은 유지하고, `factor_investing` 전략만 `skipped (factor_input_unavailable)` 진단 상태를 남기는 것을 정상 동작으로 취급합니다.
@@ -508,6 +509,7 @@ Phase 2 기준 canonical 상태는 아래와 같습니다.
     - health
     - auto-trading diagnostics
     - strategy budget
+    - broker positions
     - tax summary
     - open orders
     - recent trades
@@ -518,6 +520,8 @@ Phase 2 기준 canonical 상태는 아래와 같습니다.
   - open orders
   - recent trades
   - latest portfolio snapshot
+  - broker polling cash fallback
+  - latest broker positions
   - recent reconciliation summary
   - recent system logs
   - recent manual restore runs
@@ -535,6 +539,8 @@ Phase 2 기준 canonical 상태는 아래와 같습니다.
   - 해석 예:
     - `trend_following: completed`
     - `factor_investing: skipped (factor_input_unavailable)`
+- Strategy Budget은 최신 portfolio snapshot의 `cash_krw`를 우선 사용하고, snapshot이 없으면 최신 broker polling reconciliation의 `cash_available`를 fallback으로 사용합니다.
+- Broker Positions dashboard 섹션은 내부 전략 포지션이 아니라 최신 `broker_positions` snapshot 기준 브로커 계좌 보유를 표시합니다.
 - `factor_investing: skipped (factor_input_unavailable)`는 factor input loader/source 부재를 의미하며, runtime failure나 broker mismatch로 해석하지 않습니다.
 - Telegram notifier는 상태 판단을 하지 않고, 상위 계층이 확정한 운영 이벤트를 메시지 포맷/송신만 수행합니다.
 - 최소 운영 이벤트 표면:

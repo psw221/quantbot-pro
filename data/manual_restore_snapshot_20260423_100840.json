@@ -1,0 +1,15 @@
+{
+  "positions": [
+    {
+      "ticker": "005930",
+      "market": "KR",
+      "quantity": 1,
+      "avg_cost": 217583.333,
+      "currency": "KRW",
+      "snapshot_at": "2026-04-23T01:08:40.084845+00:00",
+      "source_env": "vts"
+    }
+  ],
+  "open_orders": [],
+  "cash_available": 9787743.0
+}

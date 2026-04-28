@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from data.database import (
     BacktestResult,
+    BrokerPosition,
     Order,
     PortfolioSnapshot,
     ReconciliationRun,
@@ -30,6 +31,7 @@ from tax.tax_calculator import TaxCalculator
 
 UTC = timezone.utc
 OPEN_ORDER_STATUSES = {"validated", "submitted", "partially_filled", "cancel_pending", "reconcile_hold"}
+BROKER_POSITION_SNAPSHOT_GROUP_WINDOW = timedelta(seconds=5)
 
 
 @dataclass(slots=True)
@@ -44,6 +46,8 @@ class DashboardSnapshot:
     recent_backtests: list[dict[str, Any]]
     operational_summary: dict[str, Any]
     recent_logs: list[dict[str, Any]]
+    latest_broker_cash: dict[str, Any] | None = None
+    latest_broker_positions: list[dict[str, Any]] = field(default_factory=list)
     auto_trading_diagnostics: dict[str, Any] | None = None
     strategy_budget_summary: dict[str, Any] = field(default_factory=dict)
     tax_summary: dict[str, Any] = field(default_factory=dict)
@@ -73,6 +77,8 @@ def build_dashboard_snapshot(
         open_orders = _load_open_orders(session, limit=max_open_orders)
         recent_trades = _load_recent_trades(session, limit=max_recent_trades)
         latest_portfolio_snapshot = _load_latest_portfolio_snapshot(session)
+        latest_broker_cash = _load_latest_broker_cash(session, source_env=resolved_settings.env.value)
+        latest_broker_positions = _load_latest_broker_positions(session, source_env=resolved_settings.env.value)
         reconciliation_summary = _load_reconciliation_summary(
             session,
             since=reference_now - recent_reconciliation_window,
@@ -87,6 +93,8 @@ def build_dashboard_snapshot(
         open_orders=open_orders,
         recent_trades=recent_trades,
         latest_portfolio_snapshot=latest_portfolio_snapshot,
+        latest_broker_cash=latest_broker_cash,
+        latest_broker_positions=latest_broker_positions,
         reconciliation_summary=reconciliation_summary,
         recent_manual_restores=recent_manual_restores,
         recent_backtests=recent_backtests,
@@ -136,6 +144,8 @@ def build_read_only_dashboard_snapshot(
         open_orders = _load_open_orders(session, limit=max_open_orders)
         recent_trades = _load_recent_trades(session, limit=max_recent_trades)
         latest_portfolio_snapshot = _load_latest_portfolio_snapshot(session)
+        latest_broker_cash = _load_latest_broker_cash(session, source_env=resolved_settings.env.value)
+        latest_broker_positions = _load_latest_broker_positions(session, source_env=resolved_settings.env.value)
         reconciliation_summary = _load_reconciliation_summary(
             session,
             since=reference_now - recent_reconciliation_window,
@@ -150,6 +160,8 @@ def build_read_only_dashboard_snapshot(
         open_orders=open_orders,
         recent_trades=recent_trades,
         latest_portfolio_snapshot=latest_portfolio_snapshot,
+        latest_broker_cash=latest_broker_cash,
+        latest_broker_positions=latest_broker_positions,
         reconciliation_summary=reconciliation_summary,
         recent_manual_restores=recent_manual_restores,
         recent_backtests=recent_backtests,
@@ -297,6 +309,61 @@ def _load_latest_portfolio_snapshot(session: Session) -> dict[str, Any] | None:
         "max_drawdown": row.max_drawdown,
         "position_count": row.position_count,
     }
+
+
+def _load_latest_broker_cash(session: Session, *, source_env: str) -> dict[str, Any] | None:
+    rows = session.scalars(
+        select(ReconciliationRun)
+        .where(ReconciliationRun.source_env == source_env)
+        .order_by(desc(ReconciliationRun.started_at), desc(ReconciliationRun.id))
+    )
+    for row in rows:
+        summary = _parse_json_object(row.summary_json)
+        cash_available = summary.get("cash_available")
+        if isinstance(cash_available, (int, float)):
+            return {
+                "cash_available": float(cash_available),
+                "source_env": row.source_env,
+                "reconciliation_run_id": row.id,
+                "run_type": row.run_type,
+                "status": row.status,
+                "started_at": row.started_at,
+            }
+    return None
+
+
+def _load_latest_broker_positions(session: Session, *, source_env: str) -> list[dict[str, Any]]:
+    latest_snapshot_at = session.scalar(
+        select(BrokerPosition.snapshot_at)
+        .where(BrokerPosition.source_env == source_env)
+        .order_by(desc(BrokerPosition.snapshot_at), desc(BrokerPosition.id))
+        .limit(1)
+    )
+    if latest_snapshot_at is None:
+        return []
+    snapshot_window_start = latest_snapshot_at - BROKER_POSITION_SNAPSHOT_GROUP_WINDOW
+
+    rows = session.scalars(
+        select(BrokerPosition)
+        .where(
+            BrokerPosition.source_env == source_env,
+            BrokerPosition.snapshot_at >= snapshot_window_start,
+            BrokerPosition.snapshot_at <= latest_snapshot_at,
+        )
+        .order_by(BrokerPosition.market, BrokerPosition.ticker)
+    )
+    return [
+        {
+            "ticker": row.ticker,
+            "market": row.market,
+            "quantity": row.quantity,
+            "avg_cost": row.avg_cost,
+            "currency": row.currency,
+            "snapshot_at": row.snapshot_at,
+            "source_env": row.source_env,
+        }
+        for row in rows
+    ]
 
 
 def _load_reconciliation_summary(session: Session, *, since: datetime) -> dict[str, Any]:
@@ -553,7 +620,19 @@ def _coerce_optional_string(value: Any) -> str | None:
 
 def build_snapshot_strategy_budget_summary(snapshot: DashboardSnapshot, *, settings: Settings) -> dict[str, Any]:
     latest_snapshot = snapshot.latest_portfolio_snapshot or {}
-    cash_available = float(latest_snapshot.get("cash_krw") or 0.0)
+    broker_cash = snapshot.latest_broker_cash or {}
+    if "cash_krw" in latest_snapshot:
+        cash_available = float(latest_snapshot.get("cash_krw") or 0.0)
+        cash_source = "portfolio_snapshot"
+        broker_cash_started_at = None
+    elif "cash_available" in broker_cash:
+        cash_available = float(broker_cash.get("cash_available") or 0.0)
+        cash_source = "broker_polling"
+        broker_cash_started_at = broker_cash.get("started_at")
+    else:
+        cash_available = 0.0
+        cash_source = "missing"
+        broker_cash_started_at = None
     gross_budget = cash_available * (1 - settings.allocation.cash_buffer)
     kr_market_budget = gross_budget * settings.allocation.domestic
     single_stock_cap = cash_available * settings.risk.max_single_stock_domestic
@@ -578,6 +657,8 @@ def build_snapshot_strategy_budget_summary(snapshot: DashboardSnapshot, *, setti
     return {
         "snapshot_available": snapshot.latest_portfolio_snapshot is not None,
         "snapshot_date": None if snapshot.latest_portfolio_snapshot is None else snapshot.latest_portfolio_snapshot.get("snapshot_date"),
+        "cash_source": cash_source,
+        "broker_cash_started_at": broker_cash_started_at,
         "cash_available_krw": round(cash_available, 2),
         "gross_budget_krw": round(gross_budget, 2),
         "kr_market_budget_krw": round(kr_market_budget, 2),
@@ -629,6 +710,16 @@ def _extract_cycle_status(message: str) -> str:
     return suffix or "unknown"
 
 
+def _parse_json_object(payload: str | None) -> dict[str, Any]:
+    if not payload:
+        return {}
+    try:
+        parsed = json.loads(payload)
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _format_metric_value(value: Any) -> str:
     if isinstance(value, float):
         return f"{value:.2f}"
@@ -650,6 +741,8 @@ def dashboard_snapshot_to_dict(snapshot: DashboardSnapshot) -> dict[str, Any]:
         "open_orders": snapshot.open_orders,
         "recent_trades": snapshot.recent_trades,
         "latest_portfolio_snapshot": snapshot.latest_portfolio_snapshot,
+        "latest_broker_cash": snapshot.latest_broker_cash,
+        "latest_broker_positions": snapshot.latest_broker_positions,
         "reconciliation_summary": snapshot.reconciliation_summary,
         "recent_manual_restores": snapshot.recent_manual_restores,
         "recent_backtests": snapshot.recent_backtests,

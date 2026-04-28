@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from data.database import (
     BacktestResult,
+    BrokerPosition,
     Order,
     OrderExecution,
     PortfolioSnapshot,
@@ -129,8 +130,19 @@ def test_dashboard_snapshot_aggregates_runtime_and_recent_db_rows(tmp_path) -> N
                 completed_at=reference_now - timedelta(hours=2) + timedelta(minutes=1),
                 mismatch_count=2,
                 status="warning",
-                summary_json="{}",
+                summary_json='{"cash_available": 7654321.0}',
                 created_at=utc_now(),
+            )
+        )
+        session.add(
+            BrokerPosition(
+                ticker="AAPL",
+                market="US",
+                quantity=3,
+                avg_cost=180,
+                currency="USD",
+                snapshot_at=reference_now - timedelta(minutes=20),
+                source_env="vts",
             )
         )
         session.add(
@@ -202,6 +214,9 @@ def test_dashboard_snapshot_aggregates_runtime_and_recent_db_rows(tmp_path) -> N
     assert snapshot.auto_trading_diagnostics is None
     assert snapshot.strategy_budget_summary["snapshot_available"] is True
     assert snapshot.strategy_budget_summary["cash_available_krw"] == 2000000.0
+    assert snapshot.strategy_budget_summary["cash_source"] == "portfolio_snapshot"
+    assert len(snapshot.latest_broker_positions) == 1
+    assert snapshot.latest_broker_positions[0]["ticker"] == "AAPL"
     assert snapshot.tax_summary["year"] == 2026
     assert snapshot.tax_summary["sell_trade_count"] == 0
     assert len(snapshot.recent_logs) == 1
@@ -210,6 +225,7 @@ def test_dashboard_snapshot_aggregates_runtime_and_recent_db_rows(tmp_path) -> N
     assert payload["health"]["details"]["status_source"] == "external_canonical"
     assert payload["operational_summary"]["latest_reconciliation_run_type"] == "manual_restore"
     assert payload["strategy_budget_summary"]["cash_available_krw"] == 2000000.0
+    assert payload["latest_broker_positions"][0]["ticker"] == "AAPL"
     assert payload["tax_summary"]["year"] == 2026
     assert payload["auto_trading_diagnostics"] is None
 
@@ -233,9 +249,92 @@ def test_dashboard_snapshot_handles_empty_read_models(tmp_path) -> None:
     assert snapshot.operational_summary["has_recent_mismatch"] is False
     assert snapshot.strategy_budget_summary["snapshot_available"] is False
     assert snapshot.strategy_budget_summary["cash_available_krw"] == 0.0
+    assert snapshot.strategy_budget_summary["cash_source"] == "missing"
+    assert snapshot.latest_broker_positions == []
     assert snapshot.tax_summary["year"] == 2026
     assert snapshot.auto_trading_diagnostics is None
     assert snapshot.recent_logs == []
+
+
+def test_dashboard_snapshot_uses_broker_cash_fallback_and_latest_broker_positions(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    init_db(settings)
+    runtime = TradingRuntime(writer_queue=WriterQueue(), settings=settings)
+    session_factory = get_session_factory()
+    reference_now = datetime(2026, 4, 27, 13, 0, tzinfo=timezone.utc)
+    older_snapshot_at = reference_now - timedelta(minutes=20)
+    latest_snapshot_at = reference_now - timedelta(minutes=5)
+
+    with session_factory() as session:
+        session.add(
+            ReconciliationRun(
+                run_type="scheduled_poll",
+                source_env="vts",
+                started_at=reference_now - timedelta(minutes=10),
+                completed_at=reference_now - timedelta(minutes=9),
+                mismatch_count=0,
+                status="ok",
+                summary_json='{"cash_available": 9522830.0, "mismatches": []}',
+                created_at=utc_now(),
+            )
+        )
+        session.add(
+            ReconciliationRun(
+                run_type="scheduled_poll",
+                source_env="prod",
+                started_at=reference_now - timedelta(minutes=1),
+                completed_at=reference_now,
+                mismatch_count=0,
+                status="ok",
+                summary_json='{"cash_available": 1.0}',
+                created_at=utc_now(),
+            )
+        )
+        session.add(
+            BrokerPosition(
+                ticker="OLD",
+                market="KR",
+                quantity=99,
+                avg_cost=1.0,
+                currency="KRW",
+                snapshot_at=older_snapshot_at,
+                source_env="vts",
+            )
+        )
+        session.add_all(
+            [
+                BrokerPosition(
+                    ticker="005930",
+                    market="KR",
+                    quantity=1,
+                    avg_cost=217583.333,
+                    currency="KRW",
+                    snapshot_at=latest_snapshot_at - timedelta(seconds=1),
+                    source_env="vts",
+                ),
+                BrokerPosition(
+                    ticker="282330",
+                    market="KR",
+                    quantity=2,
+                    avg_cost=133600.0,
+                    currency="KRW",
+                    snapshot_at=latest_snapshot_at,
+                    source_env="vts",
+                ),
+            ]
+        )
+        session.commit()
+
+    snapshot = build_dashboard_snapshot(runtime, settings=settings, now=reference_now)
+
+    assert snapshot.latest_portfolio_snapshot is None
+    assert snapshot.latest_broker_cash is not None
+    assert snapshot.latest_broker_cash["cash_available"] == 9522830.0
+    assert snapshot.strategy_budget_summary["snapshot_available"] is False
+    assert snapshot.strategy_budget_summary["cash_source"] == "broker_polling"
+    assert snapshot.strategy_budget_summary["cash_available_krw"] == 9522830.0
+    assert [row["ticker"] for row in snapshot.latest_broker_positions] == ["005930", "282330"]
+    assert {row["quantity"] for row in snapshot.latest_broker_positions} == {1, 2}
 
 
 def test_read_only_dashboard_snapshot_builds_health_from_db_rows(tmp_path) -> None:

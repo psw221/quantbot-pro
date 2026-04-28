@@ -206,18 +206,21 @@ class TradingRuntime:
             id=BROKER_POLL_JOB_ID,
             replace_existing=True,
         )
-        self.scheduler.add_job(
-            lambda: self._run_pre_close_cancel_job("KR"),
-            trigger=CronTrigger(hour=15, minute=25, timezone=KST),
-            id=PRE_CLOSE_CANCEL_KR_JOB_ID,
-            replace_existing=True,
-        )
-        self.scheduler.add_job(
-            lambda: self._run_pre_close_cancel_job("US"),
-            trigger=CronTrigger(hour=5, minute=55, timezone=KST),
-            id=PRE_CLOSE_CANCEL_US_JOB_ID,
-            replace_existing=True,
-        )
+        configured_markets = self._configured_auto_trading_markets()
+        if "KR" in configured_markets:
+            self.scheduler.add_job(
+                lambda: self._run_pre_close_cancel_job("KR"),
+                trigger=CronTrigger(hour=15, minute=25, timezone=KST),
+                id=PRE_CLOSE_CANCEL_KR_JOB_ID,
+                replace_existing=True,
+            )
+        if "US" in configured_markets:
+            self.scheduler.add_job(
+                lambda: self._run_pre_close_cancel_job("US"),
+                trigger=CronTrigger(hour=5, minute=55, timezone=KST),
+                id=PRE_CLOSE_CANCEL_US_JOB_ID,
+                replace_existing=True,
+            )
         self.scheduler.add_job(
             self._run_healthcheck_job,
             trigger=IntervalTrigger(minutes=1, timezone=KST),
@@ -857,8 +860,12 @@ class TradingRuntime:
 
     def _get_active_market(self) -> str | None:
         now_kst = self.time_provider()
-        if is_market_session_open("KR", now_kst):
+        configured_markets = self._configured_auto_trading_markets()
+        if "KR" in configured_markets and is_market_session_open("KR", now_kst):
             return "KR"
-        if is_market_session_open("US", now_kst):
+        if "US" in configured_markets and is_market_session_open("US", now_kst):
             return "US"
         return None
+
+    def _configured_auto_trading_markets(self) -> set[str]:
+        return {market.upper() for market in self.settings.auto_trading.markets}

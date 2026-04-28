@@ -18,7 +18,7 @@
 
 ## Current State
 - `main.py`는 현재 `TradingRuntime`와 `AutoTrader` wiring을 함께 기동한다.
-- `execution/runtime.py`는 token refresh, broker polling, fill ingestion, reconciliation, pre-close cancel, healthcheck만 수행한다.
+- `execution/runtime.py`는 token refresh, broker polling, fill ingestion, reconciliation, pre-close cancel, healthcheck만 수행하며, broker polling과 pre-close cancel도 `auto_trading.markets`에 설정된 시장만 대상으로 한다.
 - `strategy -> resolver -> risk -> sizing -> order submit` runtime 경로는 구현되었고, Phase 4 plan 범위의 live market smoke validation까지 닫혔다.
 - `StrategyDataProvider` protocol 기준 KR 자동매매용 provider와 live loader fallback이 구현되었으며, source 품질 검증은 장중 smoke 단계에서 확인한다.
 - `P4-01`부터 `P4-05B`까지 scheduler hook, provider, orchestration, submit integration, safeguard/logging, `main.py` wiring, blocker hardening은 준비되었다.
@@ -202,7 +202,7 @@
 - `P4-05A` 완료
   - `data/collector.py`를 추가해 보수적 KR 기본 universe loader와 `pykrx` best-effort price history loader를 제공하도록 정리했다.
   - `main.py`는 이제 `AutoTrader`, `KRStrategyDataProvider`, `OperationsRecorder`를 조립하고 `strategy_cycle_runner`를 `TradingRuntime`에 실제 주입한다.
-  - 현재 canonical universe source는 여전히 없으므로, wiring 단계에서는 기존 KR 보유 종목과 보수적 KR 기본 universe를 합친 loader를 사용한다.
+  - KR 기본 universe loader는 KOSPI200 live source를 우선 사용하고, 실패 시 `data/kospi200_constituents.json` 정적 캐시, 그 다음 최소 fallback universe를 사용한다.
   - `pykrx` price history가 불가한 환경에서는 빈 history를 반환하고, 상위 orchestration은 기존 계약대로 `data_unavailable` rejection/skip으로 처리한다.
 - `P4-06` blocker 보강
   - `execution.kis_api`에 KR 일봉 조회와 정규화 표면을 추가했다.
@@ -220,6 +220,9 @@
 - 반복 진입 가드 보강
   - VTS scheduled soak 중 확인된 반복 매수 누적을 막기 위해 `execution.auto_trader`는 같은 `ticker + strategy`에 이미 열린 포지션이 있으면 추가 `buy` 후보를 `existing_position_reentry_blocked`로 reject한다.
   - 이 가드는 동일 종목을 다른 전략이 보유하는 경우까지 막지 않으며, PRD의 복수 전략 동시 매수 정책은 유지한다.
+- KR-only runtime market scope 보강
+  - `execution.runtime`은 `auto_trading.markets=["KR"]` 상태에서 US broker polling과 US pre-close cancel job을 실행하지 않는다.
+  - 이에 따라 설정 범위 밖인 US market context의 `polling_mismatch`, `trading_blocked`, `pre_close_cancel_failure` Telegram 이벤트는 발생하지 않아야 한다.
 - `P4-06` 완료
   - KR VTS 장중에서 scheduler 기반 strategy cycle이 실제로 주문 제출과 기존 체결/원장 경로로 이어지는 것을 확인했다.
   - `order -> order_executions -> trades -> positions` 반영과 `reconciliation_runs.status=ok`, `mismatch_count=0` 유지가 live로 검증됐다.
