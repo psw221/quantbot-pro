@@ -19,7 +19,24 @@ Layer 5 운영 사용 문서
 ## Dashboard
 ### Start
 ```powershell
-streamlit run monitor/dashboard_app.py
+pwsh -File scripts/start_dashboard.ps1
+```
+
+포트 변경이 필요하면:
+
+```powershell
+pwsh -File scripts/start_dashboard.ps1 -Port 8502
+```
+
+포그라운드에서 직접 확인하려면:
+
+```powershell
+pwsh -File scripts/start_dashboard.ps1 -Foreground
+```
+
+### Stop
+```powershell
+pwsh -File scripts/stop_dashboard.ps1
 ```
 
 기본 접속 주소:
@@ -263,7 +280,7 @@ python -m scripts.repair_manual_fills --apply --market KR --ticker 005930 --stra
 - chat id
 
 ## Operator Quick Flow
-1. `streamlit run monitor/dashboard_app.py`
+1. `pwsh -File scripts/start_dashboard.ps1`
 2. `Operations Summary`에서 blocked/stale/mismatch를 먼저 확인한다.
 3. `Auto-Trading Diagnostics`에서 `Strategy Status`, strategy rows, rejection reason을 함께 본다.
 4. 복구가 필요하면 `restore_portfolio.py --dry-run`을 먼저 실행한다.

@@ -216,13 +216,39 @@ pwsh -File scripts/stop_auto_trading.ps1
 
 ## 6. 대시보드 실행
 
-```bash
-streamlit run monitor/dashboard_app.py
+Windows에서 백그라운드 실행:
+
+```powershell
+pwsh -File scripts/start_dashboard.ps1
+```
+
+중지:
+
+```powershell
+pwsh -File scripts/stop_dashboard.ps1
+```
+
+포트 변경:
+
+```powershell
+pwsh -File scripts/start_dashboard.ps1 -Port 8502
+```
+
+포그라운드 실행:
+
+```powershell
+pwsh -File scripts/start_dashboard.ps1 -Foreground
 ```
 
 기본 접속 주소:
 
 - `http://localhost:8501`
+
+시작 스크립트가 만드는 파일:
+
+- PID metadata: `data/dashboard.pid.json`
+- stdout log: `logs/dashboard.stdout.log`
+- stderr log: `logs/dashboard.stderr.log`
 
 현재 패널:
 
