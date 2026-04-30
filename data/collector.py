@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 import json
 from pathlib import Path
 from typing import Any
@@ -14,6 +14,7 @@ from strategy.data_provider import FactorInputLoader
 
 KOSPI200_INDEX_TICKER = "1028"
 KOSPI200_CACHE_PATH = Path(__file__).resolve().parent / "kospi200_constituents.json"
+KST = timezone(timedelta(hours=9))
 DEFAULT_KR_AUTO_TRADING_UNIVERSE = (
     "005930",  # Samsung Electronics
     "000660",  # SK hynix
@@ -21,6 +22,7 @@ DEFAULT_KR_AUTO_TRADING_UNIVERSE = (
 )
 
 TurnoverLoader = Callable[[list[str], datetime], Mapping[str, float]]
+IntradayHistoryLoader = Callable[[list[str], str, datetime, int], dict[str, list[dict[str, object]]]]
 
 
 def build_default_kr_universe_loader(
@@ -334,6 +336,44 @@ def build_kis_kr_price_history_loader(
                 continue
             if rows:
                 histories[ticker] = rows[-lookback_days:]
+        return histories
+
+    return loader
+
+
+def build_kis_kr_intraday_bar_loader(
+    *,
+    api_client: KISApiClient,
+    token_manager: TokenManager,
+    env,
+    access_token_provider: Callable[[], str] | None = None,
+) -> IntradayHistoryLoader:
+    def loader(
+        tickers: list[str],
+        market: str,
+        as_of: datetime,
+        lookback_minutes: int,
+    ) -> dict[str, list[dict[str, object]]]:
+        if market.upper() != "KR" or not tickers or lookback_minutes <= 0:
+            return {}
+
+        access_token = access_token_provider() if access_token_provider is not None else token_manager.get_valid_token(env)
+        requested_as_of = _coerce_utc(as_of)
+        input_hour = requested_as_of.astimezone(KST).strftime("%H%M%S")
+
+        histories: dict[str, list[dict[str, object]]] = {}
+        for ticker in dict.fromkeys(tickers):
+            try:
+                payload = api_client.get_intraday_price_history(
+                    access_token,
+                    ticker=ticker,
+                    input_hour=input_hour,
+                )
+                rows = api_client.normalize_intraday_price_history(payload, ticker=ticker)
+            except Exception:
+                continue
+            if rows:
+                histories[ticker] = rows
         return histories
 
     return loader

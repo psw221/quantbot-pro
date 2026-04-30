@@ -11,6 +11,7 @@ from data.collector import (
     build_default_kr_factor_input_loader,
     build_default_kr_universe_loader,
     build_kr_intraday_candidate_loader,
+    build_kis_kr_intraday_bar_loader,
     build_kis_kr_price_history_loader,
     build_pykrx_kr_previous_turnover_loader,
     build_pykrx_price_history_loader,
@@ -344,6 +345,8 @@ def test_build_strategy_cycle_runner_uses_default_factor_input_loader_builder(mo
     class CapturingAutoTrader:
         def __init__(self, **kwargs):
             captured["factor_input_loader"] = kwargs["data_provider"].factor_input_loader
+            captured["intraday_bar_loader"] = kwargs["data_provider"].intraday_bar_loader
+            captured["universe_loader"] = kwargs["universe_loader"]
 
         def execute_cycle(
             self,
@@ -371,6 +374,8 @@ def test_build_strategy_cycle_runner_uses_default_factor_input_loader_builder(mo
     result = runner("KR", datetime(2026, 4, 20, 9, 15, tzinfo=UTC))
 
     assert captured["factor_input_loader"] is default_loader
+    assert captured["intraday_bar_loader"] is not None
+    assert captured["universe_loader"] is not None
     assert result == {"market": "KR", "access_token": "access-token"}
 
 
@@ -510,3 +515,43 @@ def test_kis_price_history_loader_prefers_cycle_access_token_provider(tmp_path) 
 
     assert calls == ["cycle-access-token"]
     assert [row["close"] for row in histories["005930"]] == [71000.0, 72000.0]
+
+
+def test_kis_intraday_bar_loader_prefers_cycle_access_token_provider(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    calls: list[tuple[str, str]] = []
+
+    class DummyTokenManager:
+        def get_valid_token(self, env):
+            raise AssertionError("token manager should not be called when cycle access token is provided")
+
+    class DummyApiClient:
+        def get_intraday_price_history(self, access_token, *, ticker, input_hour, period_code="1", include_prev="N"):
+            calls.append((access_token, input_hour))
+            assert ticker == "005930"
+            return {"output2": [{"stck_bsop_date": "20260421", "stck_cntg_hour": "101500"}]}
+
+        def normalize_intraday_price_history(self, payload, *, ticker):
+            assert payload["output2"]
+            return [
+                {
+                    "timestamp": datetime(2026, 4, 21, 1, 15, tzinfo=UTC),
+                    "open": 70000.0,
+                    "high": 71000.0,
+                    "low": 69500.0,
+                    "close": 70500.0,
+                    "volume": 1000,
+                }
+            ]
+
+    loader = build_kis_kr_intraday_bar_loader(
+        api_client=DummyApiClient(),
+        token_manager=DummyTokenManager(),
+        env=settings.env,
+        access_token_provider=lambda: "cycle-access-token",
+    )
+
+    histories = loader(["005930"], "KR", datetime(2026, 4, 21, 1, 15, tzinfo=UTC), 60)
+
+    assert calls == [("cycle-access-token", "101500")]
+    assert histories["005930"][0]["close"] == 70500.0

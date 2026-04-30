@@ -451,8 +451,8 @@ def test_build_strategy_budget_summary_uses_latest_snapshot_cash(tmp_path) -> No
     assert summary["single_stock_cap_krw"] == 432_594.3
     assert summary["cycle_notional_cap_krw"] == 500_000.0
     rows = {row["strategy"]: row for row in summary["strategy_rows"]}
-    assert rows["dual_momentum"]["target_notional_krw"] == 1_401_605.53
-    assert rows["dual_momentum"]["candidate_cap_krw"] == 432_594.3
+    assert rows["intraday_momentum"]["target_notional_krw"] == 1_401_605.53
+    assert rows["intraday_momentum"]["candidate_cap_krw"] == 432_594.3
     assert rows["factor_investing"]["active_in_auto_trading"] is False
 
 

@@ -402,6 +402,7 @@ python scripts/restore_portfolio.py --apply --market ALL --snapshot-file <path>
 - auto-trading은 `VTS` 우선 기준
 - auto-trading은 `KR only`
 - auto-trading 전략은 현재 `intraday_momentum`, `trend_following`
+- `intraday_momentum`은 KOSPI200 유동성 후보군, 09:30~15:10 신규 진입 창, 종목당 하루 1회 신규 진입, 최대 동시 포지션 2개, 15:15 강제 청산 정책을 사용
 - 기존 `dual_momentum` 거래/원장 데이터는 historical record로 유지하며 `intraday_momentum`으로 migration하지 않음
 - `same ticker + same strategy` 추가 진입은 차단
 - `fx_alert` 자동 호출은 아직 없음

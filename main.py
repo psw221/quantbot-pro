@@ -3,7 +3,8 @@ from core.settings import get_settings
 from data.collector import (
     build_composite_kr_price_history_loader,
     build_default_kr_factor_input_loader,
-    build_default_kr_universe_loader,
+    build_kr_intraday_candidate_loader,
+    build_kis_kr_intraday_bar_loader,
     build_kis_kr_price_history_loader,
     build_pykrx_price_history_loader,
 )
@@ -57,6 +58,12 @@ def build_strategy_cycle_runner(
             access_token_provider=current_cycle_access_token,
         ),
     )
+    intraday_bar_loader = build_kis_kr_intraday_bar_loader(
+        api_client=api_client,
+        token_manager=token_manager,
+        env=settings.env,
+        access_token_provider=current_cycle_access_token,
+    )
 
     def load_cash_available(market: str, as_of):
         if market.upper() != "KR":
@@ -72,10 +79,11 @@ def build_strategy_cycle_runner(
     trader = auto_trader or AutoTrader(
         data_provider=KRStrategyDataProvider(
             price_history_loader=price_history_loader,
+            intraday_bar_loader=intraday_bar_loader,
             factor_input_loader=resolved_factor_input_loader,
             settings=settings,
         ),
-        universe_loader=build_default_kr_universe_loader(),
+        universe_loader=build_kr_intraday_candidate_loader(settings=settings),
         order_manager=order_manager,
         cash_available_loader=load_cash_available,
         settings=settings,

@@ -33,12 +33,12 @@ BROKER_POLL_JOB_ID = "broker_poll"
 PRE_CLOSE_CANCEL_KR_JOB_ID = "pre_close_cancel_kr"
 PRE_CLOSE_CANCEL_US_JOB_ID = "pre_close_cancel_us"
 HEALTHCHECK_JOB_ID = "healthcheck"
+STRATEGY_CYCLE_KR_INTRADAY_MOMENTUM_JOB_ID = "strategy_cycle_kr_intraday_momentum"
 STRATEGY_CYCLE_KR_TREND_FOLLOWING_JOB_ID = "strategy_cycle_kr_trend_following"
-STRATEGY_CYCLE_KR_DUAL_MOMENTUM_JOB_ID = "strategy_cycle_kr_dual_momentum"
 STRATEGY_CYCLE_KR_FACTOR_INVESTING_JOB_ID = "strategy_cycle_kr_factor_investing"
 KR_STRATEGY_CYCLE_JOB_IDS = {
+    "intraday_momentum": STRATEGY_CYCLE_KR_INTRADAY_MOMENTUM_JOB_ID,
     "trend_following": STRATEGY_CYCLE_KR_TREND_FOLLOWING_JOB_ID,
-    "dual_momentum": STRATEGY_CYCLE_KR_DUAL_MOMENTUM_JOB_ID,
     "factor_investing": STRATEGY_CYCLE_KR_FACTOR_INVESTING_JOB_ID,
 }
 TOKEN_REFRESH_MAX_ATTEMPTS = 3

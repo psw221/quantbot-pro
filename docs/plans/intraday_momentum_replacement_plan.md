@@ -323,6 +323,16 @@ auto_trading:
 
 ### Task 6. AutoTrader/runtime 연결
 
+상태: `done` (`2026-04-30`)
+
+완료 메모:
+
+- `execution.auto_trader._default_strategy_builders()`에서 기본 `intraday_momentum` builder를 등록하고 기존 활성 자동매매 경로의 `dual_momentum` builder를 제거했다.
+- `execution.runtime.KR_STRATEGY_CYCLE_JOB_IDS`를 `intraday_momentum`, `trend_following`, `factor_investing` 기준으로 갱신했다.
+- `main.build_strategy_cycle_runner()`에서 KIS 국내 분봉 loader를 `KRStrategyDataProvider`에 주입하고, `build_kr_intraday_candidate_loader()`를 AutoTrader universe loader로 연결했다.
+- `data.collector.build_kis_kr_intraday_bar_loader()`를 추가해 cycle access token을 재사용하면서 KIS 분봉 adapter 결과를 provider에 전달한다.
+- AutoTrader/runtime/dashboard wiring 테스트를 새 전략명 기준으로 갱신했다.
+
 완료 기준:
 
 - scheduled auto-trading cycle에서 `intraday_momentum`만 선택 실행할 수 있다.
@@ -342,6 +352,16 @@ auto_trading:
 - dashboard diagnostics 테스트
 
 ### Task 7. 안전장치와 운영 검증
+
+상태: `done` (`2026-04-30`)
+
+완료 메모:
+
+- `AutoTrader` 주문 후보 생성 직전에 `intraday_momentum` 전용 안전장치를 추가했다.
+- 당일 KST 기준 이미 유효한 `intraday_momentum` buy order가 있는 종목은 신규 buy 후보에서 제외한다.
+- 현재 보유 중인 `intraday_momentum` 포지션과 같은 cycle에서 이미 생성된 buy 후보를 합산해 `max_positions` 초과 후보를 차단한다.
+- 기존 open order block, same-strategy position reentry block, risk/sizing/market constraint, runtime skip 정책은 그대로 유지한다.
+- 15:15 강제 청산과 stop-loss/trailing stop은 Task 5 전략 테스트로 함께 검증했다.
 
 완료 기준:
 
@@ -363,6 +383,16 @@ auto_trading:
 - reconcile hold/trading blocked skip 회귀 테스트
 
 ### Task 8. 최종 문서와 전체 검증
+
+상태: `done` (`2026-04-30`)
+
+완료 메모:
+
+- `README.md` 운영 제약에 `intraday_momentum` 후보군, 신규 진입 창, 종목당 하루 1회, 최대 동시 포지션 2개, 15:15 강제 청산 정책을 명시했다.
+- `docs/plans/phase2_execution_plan.md`에 기존 `dual_momentum`은 historical/backtest 호환용으로 유지하고 활성 자동매매 표면은 `intraday_momentum` 기준이라는 후속 교체 메모를 추가했다.
+- `docs/PRD_v1.4.md`는 이미 `intraday_momentum` 전략 설명, 설정 예시, 기존 `dual_momentum` 원장 non-migration 정책을 설명하고 있어 추가 변경하지 않았다.
+- `docs/DB_SCHEMA_v1.2.md`는 schema 변경이 없고 전략명은 기존 TEXT 필드에 저장되므로 추가 변경하지 않았다.
+- 최종 검증에서 전체 테스트 `236 passed`를 확인했다.
 
 완료 기준:
 

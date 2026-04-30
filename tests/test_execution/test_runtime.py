@@ -15,8 +15,8 @@ from execution.runtime import (
     HEALTHCHECK_JOB_ID,
     PRE_CLOSE_CANCEL_KR_JOB_ID,
     PRE_CLOSE_CANCEL_US_JOB_ID,
-    STRATEGY_CYCLE_KR_DUAL_MOMENTUM_JOB_ID,
     STRATEGY_CYCLE_KR_FACTOR_INVESTING_JOB_ID,
+    STRATEGY_CYCLE_KR_INTRADAY_MOMENTUM_JOB_ID,
     STRATEGY_CYCLE_KR_TREND_FOLLOWING_JOB_ID,
     TOKEN_REFRESH_JOB_ID,
     TradingRuntime,
@@ -166,7 +166,7 @@ def test_trading_runtime_registers_expected_jobs(tmp_path) -> None:
 def test_trading_runtime_registers_strategy_cycle_jobs_when_auto_trading_enabled(tmp_path) -> None:
     settings = build_settings(
         tmp_path,
-        auto_trading={"enabled": True, "strategies": ["trend_following", "dual_momentum", "factor_investing"]},
+        auto_trading={"enabled": True, "strategies": ["trend_following", "intraday_momentum", "factor_investing"]},
     )
     writer_queue = WriterQueue()
     runtime = TradingRuntime(writer_queue=writer_queue, settings=settings)
@@ -179,7 +179,7 @@ def test_trading_runtime_registers_strategy_cycle_jobs_when_auto_trading_enabled
 
     assert {
         STRATEGY_CYCLE_KR_TREND_FOLLOWING_JOB_ID,
-        STRATEGY_CYCLE_KR_DUAL_MOMENTUM_JOB_ID,
+        STRATEGY_CYCLE_KR_INTRADAY_MOMENTUM_JOB_ID,
         STRATEGY_CYCLE_KR_FACTOR_INVESTING_JOB_ID,
     }.issubset(jobs)
 
@@ -217,7 +217,7 @@ def test_trading_runtime_runs_strategy_cycle_runner_when_enabled(tmp_path) -> No
 def test_trading_runtime_registered_strategy_jobs_forward_requested_subset(tmp_path) -> None:
     settings = build_settings(
         tmp_path,
-        auto_trading={"enabled": True, "strategies": ["trend_following", "dual_momentum", "factor_investing"]},
+        auto_trading={"enabled": True, "strategies": ["trend_following", "intraday_momentum", "factor_investing"]},
     )
     writer_queue = WriterQueue()
     now = datetime(2026, 4, 15, 9, 15, tzinfo=KST)
@@ -233,14 +233,14 @@ def test_trading_runtime_registered_strategy_jobs_forward_requested_subset(tmp_p
         runtime.start()
         _mark_strategy_cycle_ready(runtime, now)
         runtime.scheduler.get_job(STRATEGY_CYCLE_KR_TREND_FOLLOWING_JOB_ID).func()
-        runtime.scheduler.get_job(STRATEGY_CYCLE_KR_DUAL_MOMENTUM_JOB_ID).func()
+        runtime.scheduler.get_job(STRATEGY_CYCLE_KR_INTRADAY_MOMENTUM_JOB_ID).func()
         runtime.scheduler.get_job(STRATEGY_CYCLE_KR_FACTOR_INVESTING_JOB_ID).func()
     finally:
         runtime.stop()
 
     assert calls == [
         ("KR", now, ["trend_following"]),
-        ("KR", now, ["dual_momentum"]),
+        ("KR", now, ["intraday_momentum"]),
         ("KR", now, ["factor_investing"]),
     ]
 
@@ -611,6 +611,14 @@ def test_trading_runtime_skips_polling_when_market_closed(tmp_path) -> None:
             self.calls += 1
             return "token"
 
+        def refresh_token(self, env):
+            return AccessToken(
+                token="token",
+                issued_at=datetime(2026, 4, 16, 1, 0, tzinfo=KST),
+                expires_at=datetime(2026, 4, 16, 2, 0, tzinfo=KST),
+                env=env,
+            )
+
     settings = build_settings(tmp_path)
     writer_queue = WriterQueue()
     token_manager = DummyTokenManager()
@@ -643,6 +651,10 @@ def test_trading_runtime_skips_us_polling_when_us_not_configured(tmp_path) -> No
         def get_valid_token(self, env):
             self.calls += 1
             return "token"
+
+        def refresh_token(self, env):
+            issued_at = datetime(2026, 4, 16, 1, 0, tzinfo=KST)
+            return AccessToken(token="token", issued_at=issued_at, expires_at=issued_at + timedelta(hours=1))
 
     class FailingApiClient:
         def get_account_snapshot(self, access_token):

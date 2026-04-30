@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time, timedelta, timezone
 from math import sqrt
 from typing import Any
 
@@ -14,8 +14,8 @@ from execution.order_manager import OrderManager
 from risk.position_sizer import PositionSizer
 from risk.risk_manager import RiskManager
 from strategy.base import BaseStrategy, StrategyDataProvider, StrategyInputAvailability
-from strategy.dual_momentum import DualMomentumStrategy
 from strategy.factor_investing import FactorInvestingStrategy
+from strategy.intraday_momentum import IntradayMomentumStrategy
 from strategy.signal_resolver import SignalResolver
 from strategy.trend_following import TrendFollowingStrategy
 
@@ -29,6 +29,7 @@ ACTIVE_ORDER_STATUSES = {
     "reconcile_hold",
 }
 PRICE_CONTEXT_LOOKBACK_DAYS = 30
+KST = timezone(timedelta(hours=9))
 
 UniverseLoader = Callable[[str, datetime], list[str]]
 StrategyBuilder = Callable[[Settings, StrategyDataProvider], BaseStrategy]
@@ -37,8 +38,8 @@ CashAvailableLoader = Callable[[str, datetime], float]
 
 def _default_strategy_builders() -> dict[str, StrategyBuilder]:
     return {
-        "dual_momentum": lambda settings, provider: DualMomentumStrategy(
-            settings.strategies.dual_momentum,
+        "intraday_momentum": lambda settings, provider: IntradayMomentumStrategy(
+            settings.strategies.intraday_momentum,
             data_provider=provider,
         ),
         "factor_investing": lambda settings, provider: FactorInvestingStrategy(
@@ -60,6 +61,12 @@ def _coerce_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+def _kst_day_bounds_utc(value: datetime) -> tuple[datetime, datetime]:
+    value_kst = _coerce_utc(value).astimezone(KST)
+    day_start_kst = datetime.combine(value_kst.date(), time.min, tzinfo=KST)
+    return day_start_kst.astimezone(UTC), (day_start_kst + timedelta(days=1)).astimezone(UTC)
 
 
 def _estimate_annualized_volatility(closes: list[float]) -> float:
@@ -257,6 +264,21 @@ class AutoTrader:
                 )
                 continue
 
+            intraday_guard_reason = self._evaluate_intraday_entry_guard(
+                signal=signal,
+                positions=positions,
+                existing_candidates=result.order_candidates,
+                as_of=as_of_utc,
+            )
+            if intraday_guard_reason is not None:
+                result.rejected_signals.append(
+                    AutoTradeSignalRejection(
+                        signal=signal,
+                        reason=intraday_guard_reason,
+                    )
+                )
+                continue
+
             current_price = latest_prices.get(signal.ticker)
             if current_price is None or current_price <= 0:
                 result.rejected_signals.append(
@@ -379,6 +401,54 @@ class AutoTrader:
             )
 
         return result
+
+    def _evaluate_intraday_entry_guard(
+        self,
+        *,
+        signal: Signal,
+        positions: dict[tuple[str, str], PositionSnapshot],
+        existing_candidates: list[ResolvedOrderCandidate],
+        as_of: datetime,
+    ) -> str | None:
+        if signal.strategy != "intraday_momentum" or signal.action != "buy":
+            return None
+
+        if (
+            self._count_intraday_entries_for_day(signal.ticker, as_of)
+            >= self.settings.strategies.intraday_momentum.max_entries_per_ticker_per_day
+        ):
+            return "intraday_daily_entry_limit_reached"
+
+        active_tickers = {
+            position.ticker
+            for position in positions.values()
+            if position.strategy == "intraday_momentum" and position.quantity > 0
+        }
+        active_tickers.update(
+            candidate.signal.ticker
+            for candidate in existing_candidates
+            if candidate.signal.strategy == "intraday_momentum" and candidate.signal.action == "buy"
+        )
+        if signal.ticker not in active_tickers and len(active_tickers) >= self.settings.strategies.intraday_momentum.max_positions:
+            return "intraday_max_positions_reached"
+        return None
+
+    def _count_intraday_entries_for_day(self, ticker: str, as_of: datetime) -> int:
+        day_start, day_end = _kst_day_bounds_utc(as_of)
+        with self.read_session_factory() as session:
+            return int(
+                session.query(Order)
+                .filter(
+                    Order.ticker == ticker,
+                    Order.market == "KR",
+                    Order.strategy == "intraday_momentum",
+                    Order.side == "buy",
+                    Order.status.notin_(("rejected", "failed", "cancelled")),
+                    Order.submitted_at >= day_start,
+                    Order.submitted_at < day_end,
+                )
+                .count()
+            )
 
     def execute_cycle(
         self,

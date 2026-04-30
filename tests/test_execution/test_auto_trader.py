@@ -158,6 +158,10 @@ def test_auto_trader_builds_dry_candidate_from_resolved_signals_without_writing(
     trader = AutoTrader(
         data_provider=provider,
         universe_loader=lambda market, timestamp: ["005930"],
+        strategy_builders={
+            "intraday_momentum": lambda settings, provider: StubEntryStrategy("intraday_momentum"),
+            "trend_following": lambda settings, provider: StubEntryStrategy("trend_following"),
+        },
         settings=settings,
     )
 
@@ -170,7 +174,7 @@ def test_auto_trader_builds_dry_candidate_from_resolved_signals_without_writing(
     assert candidate.signal.ticker == "005930"
     assert candidate.quantity > 0
     assert candidate.order_type == "market"
-    assert candidate.metadata["source_strategies"] == ["dual_momentum", "trend_following"]
+    assert candidate.metadata["source_strategies"] == ["intraday_momentum", "trend_following"]
     with session_factory() as session:
         assert session.query(SignalRow).count() == 0
         assert session.query(Order).count() == 0
@@ -179,7 +183,7 @@ def test_auto_trader_builds_dry_candidate_from_resolved_signals_without_writing(
 def test_auto_trader_rejects_ticker_with_existing_open_order(tmp_path) -> None:
     settings = build_settings(
         tmp_path,
-        auto_trading={"enabled": True, "strategies": ["dual_momentum"]},
+        auto_trading={"enabled": True, "strategies": ["intraday_momentum"]},
     )
     init_db(settings)
     session_factory = get_session_factory()
@@ -189,7 +193,7 @@ def test_auto_trader_rejects_ticker_with_existing_open_order(tmp_path) -> None:
         signal_row = SignalRow(
             ticker="005930",
             market="KR",
-            strategy="dual_momentum",
+            strategy="intraday_momentum",
             action="buy",
             strength=1.0,
             reason="existing",
@@ -205,7 +209,7 @@ def test_auto_trader_rejects_ticker_with_existing_open_order(tmp_path) -> None:
                 signal_id=signal_row.id,
                 ticker="005930",
                 market="KR",
-                strategy="dual_momentum",
+                strategy="intraday_momentum",
                 side="buy",
                 order_type="market",
                 quantity=1,
@@ -240,7 +244,7 @@ def test_auto_trader_rejects_ticker_with_existing_open_order(tmp_path) -> None:
     trader = AutoTrader(
         data_provider=provider,
         universe_loader=lambda market, timestamp: ["005930"],
-        strategy_builders={"dual_momentum": lambda settings, provider: StubEntryStrategy("dual_momentum")},
+        strategy_builders={"intraday_momentum": lambda settings, provider: StubEntryStrategy("intraday_momentum")},
         settings=settings,
     )
 
@@ -252,7 +256,7 @@ def test_auto_trader_rejects_ticker_with_existing_open_order(tmp_path) -> None:
 
 
 def test_auto_trader_skips_factor_strategy_when_factor_input_loader_is_missing(tmp_path) -> None:
-    settings = _settings_with_auto_trading_strategies(tmp_path, ["dual_momentum", "factor_investing"])
+    settings = _settings_with_auto_trading_strategies(tmp_path, ["intraday_momentum", "factor_investing"])
     init_db(settings)
     session_factory = get_session_factory()
     as_of = datetime(2026, 4, 1, tzinfo=UTC)
@@ -286,7 +290,7 @@ def test_auto_trader_skips_factor_strategy_when_factor_input_loader_is_missing(t
         data_provider=provider,
         universe_loader=lambda market, timestamp: ["005930"],
         strategy_builders={
-            "dual_momentum": lambda settings, provider: StubEntryStrategy("dual_momentum"),
+                "intraday_momentum": lambda settings, provider: StubEntryStrategy("intraday_momentum"),
             "factor_investing": lambda settings, provider: StubEntryStrategy("factor_investing"),
         },
         settings=settings,
@@ -294,12 +298,12 @@ def test_auto_trader_skips_factor_strategy_when_factor_input_loader_is_missing(t
 
     result = trader.run_cycle("KR", as_of)
 
-    assert [signal.strategy for signal in result.generated_signals] == ["dual_momentum"]
+    assert [signal.strategy for signal in result.generated_signals] == ["intraday_momentum"]
     assert len(result.order_candidates) == 1
     diagnostics = {item.strategy_name: item for item in result.strategy_diagnostics}
-    assert diagnostics["dual_momentum"].status == "completed"
-    assert diagnostics["dual_momentum"].skip_reason is None
-    assert diagnostics["dual_momentum"].factor_input_available is None
+    assert diagnostics["intraday_momentum"].status == "completed"
+    assert diagnostics["intraday_momentum"].skip_reason is None
+    assert diagnostics["intraday_momentum"].factor_input_available is None
     assert diagnostics["factor_investing"].status == "skipped"
     assert diagnostics["factor_investing"].skip_reason == "factor_input_unavailable"
     assert diagnostics["factor_investing"].factor_input_available is False
@@ -308,7 +312,7 @@ def test_auto_trader_skips_factor_strategy_when_factor_input_loader_is_missing(t
 def test_auto_trader_runs_only_requested_strategy_subset(tmp_path) -> None:
     settings = _settings_with_auto_trading_strategies(
         tmp_path,
-        ["dual_momentum", "trend_following", "factor_investing"],
+        ["intraday_momentum", "trend_following", "factor_investing"],
     )
     init_db(settings)
     session_factory = get_session_factory()
@@ -372,14 +376,14 @@ def test_auto_trader_runs_only_requested_strategy_subset(tmp_path) -> None:
 
 
 def test_auto_trader_dedupes_requested_strategy_subset_preserving_order(tmp_path) -> None:
-    settings = _settings_with_auto_trading_strategies(tmp_path, ["dual_momentum", "trend_following"])
+    settings = _settings_with_auto_trading_strategies(tmp_path, ["intraday_momentum", "trend_following"])
     init_db(settings)
     provider = KRStrategyDataProvider(settings=settings)
     trader = AutoTrader(
         data_provider=provider,
         universe_loader=lambda market, timestamp: [],
         strategy_builders={
-            "dual_momentum": lambda settings, provider: StubEntryStrategy("dual_momentum"),
+            "intraday_momentum": lambda settings, provider: StubEntryStrategy("intraday_momentum"),
             "trend_following": lambda settings, provider: StubEntryStrategy("trend_following"),
         },
         settings=settings,
@@ -388,11 +392,11 @@ def test_auto_trader_dedupes_requested_strategy_subset_preserving_order(tmp_path
     result = trader.run_cycle(
         "KR",
         datetime(2026, 4, 1, tzinfo=UTC),
-        strategies=["trend_following", "trend_following", "dual_momentum"],
+        strategies=["trend_following", "trend_following", "intraday_momentum"],
     )
 
-    assert result.configured_strategies == ["trend_following", "dual_momentum"]
-    assert [item.strategy_name for item in result.strategy_diagnostics] == ["trend_following", "dual_momentum"]
+    assert result.configured_strategies == ["trend_following", "intraday_momentum"]
+    assert [item.strategy_name for item in result.strategy_diagnostics] == ["trend_following", "intraday_momentum"]
 
 
 def test_auto_trader_rejects_empty_strategy_subset(tmp_path) -> None:
@@ -839,7 +843,7 @@ def test_auto_trader_execute_cycle_uses_requested_strategy_subset(tmp_path) -> N
                 raw_payload=payload,
             )
 
-    settings = _settings_with_auto_trading_strategies(tmp_path, ["dual_momentum", "trend_following"])
+    settings = _settings_with_auto_trading_strategies(tmp_path, ["intraday_momentum", "trend_following"])
     init_db(settings)
     session_factory = get_session_factory()
     writer_queue = WriterQueue()
@@ -1023,6 +1027,142 @@ def test_auto_trader_rejects_buy_reentry_when_same_strategy_position_exists(tmp_
     assert result.rejected_signals[0].reason == "existing_position_reentry_blocked"
 
 
+def test_auto_trader_rejects_intraday_buy_after_daily_entry_limit(tmp_path) -> None:
+    settings = _settings_with_auto_trading_strategies(tmp_path, ["intraday_momentum"])
+    init_db(settings)
+    session_factory = get_session_factory()
+    as_of = datetime(2026, 5, 1, 1, 0, tzinfo=UTC)
+
+    with session_factory() as session:
+        signal_row = SignalRow(
+            ticker="005930",
+            market="KR",
+            strategy="intraday_momentum",
+            action="buy",
+            strength=1.0,
+            reason="prior_entry",
+            status="ordered",
+            generated_at=as_of - timedelta(minutes=30),
+            processed_at=as_of - timedelta(minutes=29),
+        )
+        session.add(signal_row)
+        session.flush()
+        session.add(
+            Order(
+                client_order_id="prior-intraday-buy",
+                signal_id=signal_row.id,
+                ticker="005930",
+                market="KR",
+                strategy="intraday_momentum",
+                side="buy",
+                order_type="market",
+                quantity=1,
+                price=None,
+                status="filled",
+                submitted_at=as_of - timedelta(minutes=29),
+                updated_at=as_of - timedelta(minutes=20),
+            )
+        )
+        session.add(
+            PortfolioSnapshot(
+                snapshot_date=as_of - timedelta(days=1),
+                total_value_krw=2_000_000,
+                cash_krw=1_000_000,
+                domestic_value_krw=1_000_000,
+                overseas_value_krw=0,
+                usd_krw_rate=1350,
+                daily_return=0,
+                cumulative_return=0,
+                drawdown=0,
+                max_drawdown=0,
+                position_count=0,
+                created_at=utc_now(),
+            )
+        )
+        session.commit()
+
+    provider = KRStrategyDataProvider(
+        price_history_loader=lambda tickers, requested_as_of, lookback_days: {
+            "005930": _kr_bars("005930", [70000, 70500, 71000]),
+        },
+        settings=settings,
+    )
+    trader = AutoTrader(
+        data_provider=provider,
+        universe_loader=lambda market, timestamp: ["005930"],
+        strategy_builders={"intraday_momentum": lambda settings, provider: StubEntryStrategy("intraday_momentum")},
+        settings=settings,
+    )
+
+    result = trader.run_cycle("KR", as_of)
+
+    assert result.order_candidates == []
+    assert len(result.rejected_signals) == 1
+    assert result.rejected_signals[0].reason == "intraday_daily_entry_limit_reached"
+
+
+def test_auto_trader_rejects_intraday_buy_when_max_positions_reached_by_cycle_candidates(tmp_path) -> None:
+    settings = _settings_with_auto_trading_strategies(tmp_path, ["intraday_momentum"])
+    init_db(settings)
+    session_factory = get_session_factory()
+    as_of = datetime(2026, 5, 1, 1, 0, tzinfo=UTC)
+
+    with session_factory() as session:
+        session.add(
+            Position(
+                ticker="251340",
+                market="KR",
+                strategy="intraday_momentum",
+                quantity=1,
+                avg_cost=12000,
+                current_price=12100,
+                highest_price=12200,
+                entry_date=as_of - timedelta(hours=1),
+                updated_at=utc_now(),
+            )
+        )
+        session.add(
+            PortfolioSnapshot(
+                snapshot_date=as_of - timedelta(days=1),
+                total_value_krw=3_000_000,
+                cash_krw=2_000_000,
+                domestic_value_krw=1_000_000,
+                overseas_value_krw=0,
+                usd_krw_rate=1350,
+                daily_return=0,
+                cumulative_return=0,
+                drawdown=0,
+                max_drawdown=0,
+                position_count=1,
+                created_at=utc_now(),
+            )
+        )
+        session.commit()
+
+    provider = KRStrategyDataProvider(
+        price_history_loader=lambda tickers, requested_as_of, lookback_days: {
+            ticker: _kr_bars(ticker, [70000, 70500, 71000])
+            for ticker in ["005930", "000660", "251340"]
+        },
+        settings=settings,
+    )
+    trader = AutoTrader(
+        data_provider=provider,
+        universe_loader=lambda market, timestamp: ["005930", "000660"],
+        strategy_builders={
+            "intraday_momentum": lambda settings, provider: MultiTickerEntryStrategy("intraday_momentum")
+        },
+        settings=settings,
+    )
+
+    result = trader.run_cycle("KR", as_of)
+
+    assert [candidate.signal.ticker for candidate in result.order_candidates] == ["005930"]
+    assert len(result.rejected_signals) == 1
+    assert result.rejected_signals[0].signal.ticker == "000660"
+    assert result.rejected_signals[0].reason == "intraday_max_positions_reached"
+
+
 def test_auto_trader_allows_buy_when_position_exists_for_different_strategy(tmp_path) -> None:
     settings = build_settings(
         tmp_path,
@@ -1037,7 +1177,7 @@ def test_auto_trader_allows_buy_when_position_exists_for_different_strategy(tmp_
             Position(
                 ticker="005930",
                 market="KR",
-                strategy="dual_momentum",
+                strategy="intraday_momentum",
                 quantity=3,
                 avg_cost=70000,
                 current_price=71000,
@@ -1148,7 +1288,7 @@ def test_auto_trader_builds_exit_candidate_from_existing_position(tmp_path) -> N
 def test_auto_trader_rejects_candidate_when_latest_price_is_missing(tmp_path) -> None:
     settings = build_settings(
         tmp_path,
-        auto_trading={"enabled": True, "strategies": ["dual_momentum"]},
+        auto_trading={"enabled": True, "strategies": ["intraday_momentum"]},
     )
     init_db(settings)
     session_factory = get_session_factory()
@@ -1177,7 +1317,7 @@ def test_auto_trader_rejects_candidate_when_latest_price_is_missing(tmp_path) ->
     trader = AutoTrader(
         data_provider=provider,
         universe_loader=lambda market, timestamp: ["005930"],
-        strategy_builders={"dual_momentum": lambda settings, provider: StubEntryStrategy("dual_momentum")},
+        strategy_builders={"intraday_momentum": lambda settings, provider: StubEntryStrategy("intraday_momentum")},
         settings=settings,
     )
 
@@ -1192,7 +1332,7 @@ def test_auto_trader_rejects_candidate_when_latest_price_is_missing(tmp_path) ->
 def test_auto_trader_applies_kr_market_constraints_before_order_candidate(tmp_path) -> None:
     settings = build_settings(
         tmp_path,
-        auto_trading={"enabled": True, "strategies": ["dual_momentum"]},
+        auto_trading={"enabled": True, "strategies": ["intraday_momentum"]},
     )
     init_db(settings)
     session_factory = get_session_factory()
@@ -1226,7 +1366,7 @@ def test_auto_trader_applies_kr_market_constraints_before_order_candidate(tmp_pa
     trader = AutoTrader(
         data_provider=provider,
         universe_loader=lambda market, timestamp: ["005930"],
-        strategy_builders={"dual_momentum": lambda settings, provider: StubEntryStrategy("dual_momentum")},
+        strategy_builders={"intraday_momentum": lambda settings, provider: StubEntryStrategy("intraday_momentum")},
         settings=settings,
     )
 
@@ -1240,7 +1380,7 @@ def test_auto_trader_applies_kr_market_constraints_before_order_candidate(tmp_pa
 def test_auto_trader_rejects_overheated_event_before_order_candidate(tmp_path) -> None:
     settings = build_settings(
         tmp_path,
-        auto_trading={"enabled": True, "strategies": ["dual_momentum"]},
+        auto_trading={"enabled": True, "strategies": ["intraday_momentum"]},
     )
     init_db(settings)
     session_factory = get_session_factory()
@@ -1282,7 +1422,7 @@ def test_auto_trader_rejects_overheated_event_before_order_candidate(tmp_path) -
     trader = AutoTrader(
         data_provider=provider,
         universe_loader=lambda market, timestamp: ["005930"],
-        strategy_builders={"dual_momentum": lambda settings, provider: StubEntryStrategy("dual_momentum")},
+        strategy_builders={"intraday_momentum": lambda settings, provider: StubEntryStrategy("intraday_momentum")},
         settings=settings,
     )
 
@@ -1308,7 +1448,7 @@ def test_auto_trader_execute_cycle_persists_signal_and_submits_order(tmp_path) -
 
     settings = build_settings(
         tmp_path,
-        auto_trading={"enabled": True, "strategies": ["dual_momentum"]},
+        auto_trading={"enabled": True, "strategies": ["intraday_momentum"]},
     )
     init_db(settings)
     session_factory = get_session_factory()
@@ -1344,7 +1484,7 @@ def test_auto_trader_execute_cycle_persists_signal_and_submits_order(tmp_path) -
         trader = AutoTrader(
             data_provider=provider,
             universe_loader=lambda market, timestamp: ["005930"],
-            strategy_builders={"dual_momentum": lambda settings, provider: StubEntryStrategy("dual_momentum")},
+            strategy_builders={"intraday_momentum": lambda settings, provider: StubEntryStrategy("intraday_momentum")},
             order_manager=manager,
             settings=settings,
         )
@@ -1379,7 +1519,7 @@ def test_auto_trader_execute_cycle_respects_cycle_order_limit(tmp_path) -> None:
 
     settings = build_settings(
         tmp_path,
-        auto_trading={"enabled": True, "strategies": ["dual_momentum"], "max_orders_per_cycle": 1},
+        auto_trading={"enabled": True, "strategies": ["intraday_momentum"], "max_orders_per_cycle": 1},
     )
     init_db(settings)
     session_factory = get_session_factory()
@@ -1418,7 +1558,9 @@ def test_auto_trader_execute_cycle_respects_cycle_order_limit(tmp_path) -> None:
         trader = AutoTrader(
             data_provider=provider,
             universe_loader=lambda market, timestamp: ["005930", "000660"],
-            strategy_builders={"dual_momentum": lambda settings, provider: MultiTickerEntryStrategy("dual_momentum")},
+            strategy_builders={
+                "intraday_momentum": lambda settings, provider: MultiTickerEntryStrategy("intraday_momentum")
+            },
             order_manager=manager,
             settings=settings,
         )
@@ -1448,7 +1590,7 @@ def test_auto_trader_execute_cycle_surfaces_submit_failure_without_marking_submi
 
     settings = build_settings(
         tmp_path,
-        auto_trading={"enabled": True, "strategies": ["dual_momentum"]},
+        auto_trading={"enabled": True, "strategies": ["intraday_momentum"]},
     )
     init_db(settings)
     session_factory = get_session_factory()
@@ -1484,7 +1626,7 @@ def test_auto_trader_execute_cycle_surfaces_submit_failure_without_marking_submi
         trader = AutoTrader(
             data_provider=provider,
             universe_loader=lambda market, timestamp: ["005930"],
-            strategy_builders={"dual_momentum": lambda settings, provider: StubEntryStrategy("dual_momentum")},
+            strategy_builders={"intraday_momentum": lambda settings, provider: StubEntryStrategy("intraday_momentum")},
             order_manager=manager,
             settings=settings,
         )
@@ -1504,7 +1646,7 @@ def test_auto_trader_execute_cycle_surfaces_submit_failure_without_marking_submi
 def test_auto_trader_uses_cash_available_loader_when_snapshot_is_missing(tmp_path) -> None:
     settings = build_settings(
         tmp_path,
-        auto_trading={"enabled": True, "strategies": ["dual_momentum"]},
+        auto_trading={"enabled": True, "strategies": ["intraday_momentum"]},
     )
     init_db(settings)
     as_of = datetime(2026, 5, 1, tzinfo=UTC)
@@ -1518,7 +1660,7 @@ def test_auto_trader_uses_cash_available_loader_when_snapshot_is_missing(tmp_pat
     trader = AutoTrader(
         data_provider=provider,
         universe_loader=lambda market, timestamp: ["005930"],
-        strategy_builders={"dual_momentum": lambda settings, provider: StubEntryStrategy("dual_momentum")},
+        strategy_builders={"intraday_momentum": lambda settings, provider: StubEntryStrategy("intraday_momentum")},
         cash_available_loader=lambda market, timestamp: 2_000_000.0,
         settings=settings,
     )
