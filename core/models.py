@@ -6,7 +6,7 @@ from enum import Enum
 from typing import Any, Literal
 
 
-StrategyName = Literal["dual_momentum", "trend_following", "factor_investing"]
+StrategyName = Literal["intraday_momentum", "trend_following", "factor_investing"]
 MarketCode = Literal["KR", "US"]
 SignalAction = Literal["buy", "sell", "hold"]
 OrderSide = Literal["buy", "sell"]
@@ -177,6 +177,18 @@ class PriceBar:
     close: float
     high: float | None = None
     low: float | None = None
+
+
+@dataclass(slots=True)
+class IntradayBar:
+    ticker: str
+    market: MarketCode
+    timestamp: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: int
 
 
 @dataclass(slots=True)

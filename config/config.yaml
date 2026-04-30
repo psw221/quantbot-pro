@@ -6,18 +6,25 @@ allocation:
   cash_buffer: 0.10
 
 strategy_weights:
-  dual_momentum: 0.30
+  intraday_momentum: 0.30
   trend_following: 0.25
   factor_investing: 0.45
 
 strategies:
   min_position_fraction: 0.01
   event_filter_enabled: true
-  dual_momentum:
-    lookback_days: 252
-    top_n: 10
-    rebalance_day_of_month: 1
-    absolute_momentum_floor: 0.0
+  intraday_momentum:
+    opening_range_minutes: 30
+    bar_interval_minutes: 1
+    candidate_top_n_by_turnover: 50
+    max_positions: 2
+    max_entries_per_ticker_per_day: 1
+    stop_loss_pct: -0.007
+    take_profit_pct: 0.015
+    trailing_stop_pct: -0.006
+    no_entry_before_kst: "09:30"
+    no_entry_after_kst: "15:10"
+    force_exit_time_kst: "15:15"
   trend_following:
     ema_fast_period: 20
     ema_slow_period: 60
@@ -38,7 +45,7 @@ strategies:
 auto_trading:
   enabled: true
   markets: [KR]
-  strategies: [dual_momentum, trend_following]
+  strategies: [intraday_momentum, trend_following]
   max_orders_per_cycle: 1
   max_order_notional_per_cycle: 500000
   allow_new_entries: true
@@ -46,8 +53,8 @@ auto_trading:
   kr:
     schedule_cron: "*/15 9-15 * * 1-5"
     strategy_schedule_crons:
+      intraday_momentum: "*/10 9-15 * * 1-5"
       trend_following: "*/15 9-15 * * 1-5"
-      dual_momentum: "0 9 1 * *"
       factor_investing: "5 9 1 1,4,7,10 *"
 
 database:

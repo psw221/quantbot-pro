@@ -44,14 +44,14 @@ def build_settings(tmp_path: Path, *, auto_trading: dict | None = None) -> Setti
         "env": "vts",
         "allocation": {"domestic": 0.60, "overseas": 0.30, "cash_buffer": 0.10},
         "strategy_weights": {
-            "dual_momentum": 0.30,
+            "intraday_momentum": 0.30,
             "trend_following": 0.25,
             "factor_investing": 0.45,
         },
         "auto_trading": {
             "enabled": False,
             "markets": ["KR"],
-            "strategies": ["dual_momentum", "trend_following"],
+            "strategies": ["intraday_momentum", "trend_following"],
             "max_orders_per_cycle": 1,
             "max_order_notional_per_cycle": 500000,
             "allow_new_entries": True,
@@ -59,8 +59,8 @@ def build_settings(tmp_path: Path, *, auto_trading: dict | None = None) -> Setti
             "kr": {
                 "schedule_cron": "*/15 9-15 * * 1-5",
                 "strategy_schedule_crons": {
+                    "intraday_momentum": "*/10 9-15 * * 1-5",
                     "trend_following": "*/15 9-15 * * 1-5",
-                    "dual_momentum": "0 9 1 * *",
                     "factor_investing": "5 9 1 1,4,7,10 *",
                 },
             },
@@ -127,11 +127,11 @@ def test_settings_accept_auto_trading_contract(tmp_path: Path) -> None:
 
     assert settings.auto_trading.enabled is True
     assert settings.auto_trading.markets == ["KR"]
-    assert settings.auto_trading.strategies == ["dual_momentum", "trend_following"]
+    assert settings.auto_trading.strategies == ["intraday_momentum", "trend_following"]
     assert settings.auto_trading.kr.schedule_cron == "*/15 9-15 * * 1-5"
     assert settings.auto_trading.kr.strategy_schedule_crons == {
+        "intraday_momentum": "*/10 9-15 * * 1-5",
         "trend_following": "*/15 9-15 * * 1-5",
-        "dual_momentum": "0 9 1 * *",
         "factor_investing": "5 9 1 1,4,7,10 *",
     }
     assert settings.risk.kr_price_limit_pct == 0.30
@@ -162,8 +162,8 @@ def test_settings_accept_partial_strategy_specific_kr_crons_with_fallback(tmp_pa
     ("strategies"),
     [
         ["factor_investing"],
-        ["dual_momentum", "factor_investing"],
-        ["dual_momentum", "trend_following", "factor_investing"],
+        ["intraday_momentum", "factor_investing"],
+        ["intraday_momentum", "trend_following", "factor_investing"],
     ],
 )
 def test_settings_accept_factor_strategy_in_auto_trading_scope(tmp_path: Path, strategies: list[str]) -> None:
@@ -177,9 +177,10 @@ def test_settings_accept_factor_strategy_in_auto_trading_scope(tmp_path: Path, s
     [
         {"markets": ["US"]},
         {"strategies": []},
-        {"strategies": ["dual_momentum", "dual_momentum"]},
+        {"strategies": ["intraday_momentum", "intraday_momentum"]},
         {"strategies": ["unsupported_strategy"]},
-        {"strategies": ["dual_momentum", "unsupported_strategy"]},
+        {"strategies": ["dual_momentum"]},
+        {"strategies": ["intraday_momentum", "unsupported_strategy"]},
     ],
 )
 def test_settings_reject_unsupported_auto_trading_scope(tmp_path: Path, auto_trading: dict) -> None:

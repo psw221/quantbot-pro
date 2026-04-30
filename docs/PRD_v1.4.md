@@ -30,6 +30,7 @@
 | v1.2 | 2025-04 | 토큰 자동 갱신, 수정주가, Vol Parity, 세금/이벤트/DR 보강 |
 | v1.3 | 2026-04 | 주문/체결 분리, 자산 배분 공식 명확화, KPI 정의 보강 |
 | v1.4 | 2026-04 | 거시적 리밸런싱 정책 추가, 10분 주기 브로커 폴링 동기화 요구사항 추가 |
+| v1.4-doc | 2026-04 | 활성 자동매매 전략 표면을 `dual_momentum`에서 `intraday_momentum`으로 교체 |
 
 ---
 
@@ -116,7 +117,7 @@
 
 | 전략 | 가중치 | 성격 |
 |------|--------|------|
-| 듀얼 모멘텀 | 30% | 안정성 중심 |
+| 장중 모멘텀 | 30% | Opening Range + VWAP 기반 데이트레이딩 |
 | 추세 추종 + Vol Target | 25% | 추세 국면 대응 |
 | 멀티 팩터 | 45% | 핵심 Alpha 원천 |
 
@@ -125,11 +126,11 @@
 ```text
 총자산
   ├─ 국내 버킷 60%
-  │    ├─ 듀얼 모멘텀 30%
+  │    ├─ 장중 모멘텀 30%
   │    ├─ 추세 추종 25%
   │    └─ 멀티 팩터 45%
   ├─ 미국 버킷 30%
-  │    ├─ 듀얼 모멘텀 30%
+  │    ├─ 장중 모멘텀 30%
   │    ├─ 추세 추종 25%
   │    └─ 멀티 팩터 45%
   └─ 현금 버퍼 10%
@@ -172,12 +173,16 @@
 
 ### 3.7 전략 개요
 
-#### 전략 1 — 듀얼 모멘텀
+#### 전략 1 — 장중 모멘텀
 
-- 절대 모멘텀 12개월
-- 상대 모멘텀 상위 10종목
-- 월 1회 리밸런싱
-- 손절: KR -7%, US -5%
+- 전략명: `intraday_momentum`
+- 대상 시장: KR
+- KOSPI200 중 전일 거래대금 상위 50개와 현재 보유 종목을 후보로 사용
+- 09:00~09:30 opening range 계산 후, 09:30 이후 현재가가 opening range high를 돌파하고 VWAP 위에 있으며 거래량 증가 조건을 만족할 때 신규 매수 후보 생성
+- 15:10 이후 신규 진입 금지
+- 15:15 이후 `intraday_momentum` 보유 포지션 전량 청산 신호 생성
+- 기본 리스크: stop-loss -0.7%, take-profit 1.5%, trailing stop -0.6%, 최대 동시 포지션 2개, 종목당 하루 1회 신규 진입
+- 기존 `dual_momentum` 원장 데이터는 historical record로 유지하며 새 전략명으로 migration하지 않음
 
 #### 전략 2 — 추세 추종 + 변동성 조절
 
@@ -238,7 +243,7 @@ Layer 1  데이터 수집
   - 경제 캘린더
 
 Layer 2  전략 엔진
-  - 듀얼 모멘텀
+  - 장중 모멘텀
   - 추세 추종
   - 멀티 팩터
   - 신호 충돌 해소
@@ -377,8 +382,8 @@ Layer 5  모니터링 및 DR
 - 국내 장 종료 전 취소는 브로커 주문번호 외에 주문조직번호(`broker_order_orgno`)까지 저장된 주문만 브로커 취소 대상으로 사용합니다.
 - 현재 저장소 기준 KR scheduled auto-trading은 단일 시장 job이 아니라 전략별 job으로 분리해 실행합니다.
 - KR 전략별 기본 스케줄은 아래를 사용합니다.
+  - `intraday_momentum`: `*/10 9-15 * * 1-5`
   - `trend_following`: `*/15 9-15 * * 1-5`
-  - `dual_momentum`: `0 9 1 * *`
   - `factor_investing`: `5 9 1 1,4,7,10 *`
 - 전략별 cron이 명시되지 않은 경우 `auto_trading.kr.schedule_cron`을 fallback으로 사용합니다.
 - 현재 저장소 기준 KR 기본 전략 universe는 `KOSPI 200` 구성종목을 기준으로 로드합니다.
@@ -688,18 +693,25 @@ allocation:
   cash_buffer: 0.10
 
 strategy_weights:
-  dual_momentum: 0.30
+  intraday_momentum: 0.30
   trend_following: 0.25
   factor_investing: 0.45
 
 strategies:
   min_position_fraction: 0.01
   event_filter_enabled: true
-  dual_momentum:
-    lookback_days: 252
-    top_n: 10
-    rebalance_day_of_month: 1
-    absolute_momentum_floor: 0.0
+  intraday_momentum:
+    opening_range_minutes: 30
+    bar_interval_minutes: 1
+    candidate_top_n_by_turnover: 50
+    max_positions: 2
+    max_entries_per_ticker_per_day: 1
+    stop_loss_pct: -0.007
+    take_profit_pct: 0.015
+    trailing_stop_pct: -0.006
+    no_entry_before_kst: "09:30"
+    no_entry_after_kst: "15:10"
+    force_exit_time_kst: "15:15"
   trend_following:
     ema_fast_period: 20
     ema_slow_period: 60

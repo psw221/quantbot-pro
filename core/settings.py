@@ -7,7 +7,7 @@ from typing import Any
 
 import yaml
 from dotenv import dotenv_values
-from pydantic import BaseModel, Field, SecretStr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 from core.exceptions import ConfigurationError
 
@@ -132,19 +132,56 @@ class AllocationSettings(BaseModel):
 
 
 class StrategyWeightsSettings(BaseModel):
-    dual_momentum: float = 0.30
+    model_config = ConfigDict(extra="forbid")
+
+    intraday_momentum: float = 0.30
     trend_following: float = 0.25
     factor_investing: float = 0.45
 
     @model_validator(mode="after")
     def validate_total(self) -> "StrategyWeightsSettings":
-        total = self.dual_momentum + self.trend_following + self.factor_investing
+        total = self.intraday_momentum + self.trend_following + self.factor_investing
         if round(total, 6) != 1.0:
             raise ConfigurationError("strategy_weights must sum to 1.0")
         return self
 
 
+class IntradayMomentumSettings(BaseModel):
+    opening_range_minutes: int = 30
+    bar_interval_minutes: int = 1
+    candidate_top_n_by_turnover: int = 50
+    max_positions: int = 2
+    max_entries_per_ticker_per_day: int = 1
+    stop_loss_pct: float = -0.007
+    take_profit_pct: float = 0.015
+    trailing_stop_pct: float = -0.006
+    no_entry_before_kst: str = "09:30"
+    no_entry_after_kst: str = "15:10"
+    force_exit_time_kst: str = "15:15"
+
+    @model_validator(mode="after")
+    def validate_intraday_contract(self) -> "IntradayMomentumSettings":
+        if self.opening_range_minutes <= 0:
+            raise ConfigurationError("strategies.intraday_momentum.opening_range_minutes must be positive")
+        if self.bar_interval_minutes <= 0:
+            raise ConfigurationError("strategies.intraday_momentum.bar_interval_minutes must be positive")
+        if self.candidate_top_n_by_turnover <= 0:
+            raise ConfigurationError("strategies.intraday_momentum.candidate_top_n_by_turnover must be positive")
+        if self.max_positions <= 0:
+            raise ConfigurationError("strategies.intraday_momentum.max_positions must be positive")
+        if self.max_entries_per_ticker_per_day <= 0:
+            raise ConfigurationError(
+                "strategies.intraday_momentum.max_entries_per_ticker_per_day must be positive"
+            )
+        _validate_time_value(self.no_entry_before_kst, field_name="strategies.intraday_momentum.no_entry_before_kst")
+        _validate_time_value(self.no_entry_after_kst, field_name="strategies.intraday_momentum.no_entry_after_kst")
+        _validate_time_value(self.force_exit_time_kst, field_name="strategies.intraday_momentum.force_exit_time_kst")
+        return self
+
+
 class DualMomentumSettings(BaseModel):
+    """Legacy settings type kept so historical strategy modules remain importable."""
+
     lookback_days: int = 252
     top_n: int = 10
     rebalance_day_of_month: int = 1
@@ -179,7 +216,9 @@ class FactorInvestingSettings(BaseModel):
 
 
 class StrategySettings(BaseModel):
-    dual_momentum: DualMomentumSettings = Field(default_factory=DualMomentumSettings)
+    model_config = ConfigDict(extra="forbid")
+
+    intraday_momentum: IntradayMomentumSettings = Field(default_factory=IntradayMomentumSettings)
     trend_following: TrendFollowingSettings = Field(default_factory=TrendFollowingSettings)
     factor_investing: FactorInvestingSettings = Field(default_factory=FactorInvestingSettings)
     min_position_fraction: float = 0.01
@@ -187,7 +226,7 @@ class StrategySettings(BaseModel):
 
 
 SUPPORTED_AUTO_TRADING_STRATEGIES = frozenset(
-    {"dual_momentum", "trend_following", "factor_investing"}
+    {"intraday_momentum", "trend_following", "factor_investing"}
 )
 
 
@@ -211,6 +250,19 @@ def _validate_time_range(value: str, *, field_name: str) -> None:
             raise ConfigurationError(f"{field_name} must use HH:MM-HH:MM syntax") from exc
         if not 0 <= hour <= 23 or not 0 <= minute <= 59:
             raise ConfigurationError(f"{field_name} must use valid HH:MM values")
+
+
+def _validate_time_value(value: str, *, field_name: str) -> None:
+    hour_minute = value.split(":")
+    if len(hour_minute) != 2:
+        raise ConfigurationError(f"{field_name} must use HH:MM syntax")
+    try:
+        hour = int(hour_minute[0])
+        minute = int(hour_minute[1])
+    except ValueError as exc:
+        raise ConfigurationError(f"{field_name} must use HH:MM syntax") from exc
+    if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+        raise ConfigurationError(f"{field_name} must use valid HH:MM values")
 
 
 class AutoTradingMarketSettings(BaseModel):
@@ -242,7 +294,7 @@ class AutoTradingMarketSettings(BaseModel):
 class AutoTradingSettings(BaseModel):
     enabled: bool = False
     markets: list[str] = Field(default_factory=lambda: ["KR"])
-    strategies: list[str] = Field(default_factory=lambda: ["dual_momentum", "trend_following"])
+    strategies: list[str] = Field(default_factory=lambda: ["intraday_momentum", "trend_following"])
     max_orders_per_cycle: int = 1
     max_order_notional_per_cycle: float = 500000.0
     allow_new_entries: bool = True
@@ -263,7 +315,7 @@ class AutoTradingSettings(BaseModel):
             raise ConfigurationError("auto_trading.strategies must not contain duplicates")
         if set(self.strategies) - SUPPORTED_AUTO_TRADING_STRATEGIES:
             raise ConfigurationError(
-                "KR auto_trading scope supports only dual_momentum, trend_following, and factor_investing"
+                "KR auto_trading scope supports only intraday_momentum, trend_following, and factor_investing"
             )
         if self.max_orders_per_cycle < 1:
             raise ConfigurationError("auto_trading.max_orders_per_cycle must be at least 1")

@@ -11,7 +11,7 @@
 
 주의:
 - 현재 자동매매는 `VTS` 우선 운영 기준입니다.
-- 현재 auto-trading 범위는 `KR only`, `dual_momentum + trend_following`입니다.
+- 현재 auto-trading 범위는 `KR only`, `intraday_momentum + trend_following`입니다.
 - `env != vts`면 auto-trading cycle은 안전 가드로 skip 됩니다.
 
 ## 1. 현재 지원 범위
@@ -140,7 +140,7 @@ env: vts
 auto_trading:
   enabled: true
   markets: [KR]
-  strategies: [dual_momentum, trend_following]
+  strategies: [intraday_momentum, trend_following]
   max_orders_per_cycle: 1
   max_order_notional_per_cycle: 500000
 
@@ -401,7 +401,8 @@ python scripts/restore_portfolio.py --apply --market ALL --snapshot-file <path>
 
 - auto-trading은 `VTS` 우선 기준
 - auto-trading은 `KR only`
-- auto-trading 전략은 현재 `dual_momentum`, `trend_following`
+- auto-trading 전략은 현재 `intraday_momentum`, `trend_following`
+- 기존 `dual_momentum` 거래/원장 데이터는 historical record로 유지하며 `intraday_momentum`으로 migration하지 않음
 - `same ticker + same strategy` 추가 진입은 차단
 - `fx_alert` 자동 호출은 아직 없음
 - 일일 세후 리포트는 아직 없음
