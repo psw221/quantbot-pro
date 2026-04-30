@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
-from core.models import EventFlag, FactorSnapshot, MarketCode, PositionSnapshot, PriceBar, Signal
+from core.models import EventFlag, FactorSnapshot, IntradayBar, MarketCode, PositionSnapshot, PriceBar, Signal
 
 
 @dataclass(slots=True)
@@ -22,6 +22,15 @@ class StrategyDataProvider(Protocol):
         as_of: datetime,
         lookback_days: int,
     ) -> dict[str, list[PriceBar]]:
+        ...
+
+    def get_intraday_bars(
+        self,
+        tickers: list[str],
+        market: MarketCode,
+        as_of: datetime,
+        lookback_minutes: int,
+    ) -> dict[str, list[IntradayBar]]:
         ...
 
     def get_factor_inputs(

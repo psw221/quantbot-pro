@@ -224,6 +224,10 @@ class StrategySettings(BaseModel):
     min_position_fraction: float = 0.01
     event_filter_enabled: bool = True
 
+    @property
+    def dual_momentum(self) -> DualMomentumSettings:
+        return DualMomentumSettings()
+
 
 SUPPORTED_AUTO_TRADING_STRATEGIES = frozenset(
     {"intraday_momentum", "trend_following", "factor_investing"}

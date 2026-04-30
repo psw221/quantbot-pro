@@ -200,6 +200,16 @@ auto_trading:
 
 ### Task 2. 장중 데이터 모델과 provider 계약 추가
 
+상태: `done` (`2026-04-30`)
+
+완료 메모:
+
+- `StrategyDataProvider` protocol에 `get_intraday_bars(tickers, market, as_of, lookback_minutes)`를 추가했다.
+- `KRStrategyDataProvider`에 `intraday_bar_loader` 주입 표면과 장중 OHLCV 정규화/필터링/cache 경로를 추가했다.
+- intraday cache key는 `ticker + market + as_of minute` 단위로 두고, 같은 minute 안의 짧은 lookback 요청은 기존 loader 결과를 재사용한다.
+- loader 미주입, 비-KR 시장, 빈 ticker, 잘못된 lookback은 빈 결과를 반환한다.
+- 테스트용 fake provider는 기본적으로 빈 intraday 결과를 반환하도록 갱신했다.
+
 완료 기준:
 
 - 전략이 OHLCV 분봉 데이터를 typed interface로 받을 수 있다.

@@ -46,6 +46,9 @@ class FakeStrategyDataProvider:
             result[ticker] = bars[-lookback_days:]
         return result
 
+    def get_intraday_bars(self, tickers, market, as_of, lookback_minutes):
+        return {}
+
     def get_factor_inputs(self, tickers, market, as_of):
         return {
             ticker: FactorSnapshot(

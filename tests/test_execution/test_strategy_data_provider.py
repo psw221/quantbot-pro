@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from core.models import FactorSnapshot
+from core.models import FactorSnapshot, IntradayBar
 from data.database import EventCalendar, get_session_factory, init_db, utc_now
 from strategy.data_provider import KRStrategyDataProvider
 from tests.test_execution.test_bootstrap import build_settings
@@ -42,6 +42,111 @@ def test_kr_strategy_data_provider_returns_empty_price_history_without_loader(tm
     history = provider.get_price_history(["005930"], "KR", datetime(2026, 4, 20, tzinfo=UTC), lookback_days=5)
 
     assert history == {}
+
+
+def test_kr_strategy_data_provider_returns_empty_intraday_bars_without_loader(tmp_path) -> None:
+    provider = KRStrategyDataProvider(settings=build_settings(tmp_path))
+
+    history = provider.get_intraday_bars(["005930"], "KR", datetime(2026, 4, 20, 9, 35, tzinfo=UTC), 60)
+
+    assert history == {}
+
+
+def test_kr_strategy_data_provider_normalizes_filtered_intraday_bars(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    as_of = datetime(2026, 4, 20, 9, 35, 30, tzinfo=UTC)
+
+    def loader(tickers, market, requested_as_of, lookback_minutes):
+        assert tickers == ["005930"]
+        assert market == "KR"
+        assert requested_as_of == as_of
+        assert lookback_minutes == 30
+        return {
+            "005930": [
+                {
+                    "timestamp": datetime(2026, 4, 20, 9, 10, tzinfo=UTC),
+                    "open": "70000",
+                    "high": "70100",
+                    "low": "69900",
+                    "close": "70050",
+                    "volume": "1000",
+                },
+                IntradayBar(
+                    ticker="005930",
+                    market="KR",
+                    timestamp=datetime(2026, 4, 20, 9, 35, tzinfo=UTC),
+                    open=70200,
+                    high=70300,
+                    low=70150,
+                    close=70250,
+                    volume=1500,
+                ),
+                {
+                    "timestamp": datetime(2026, 4, 20, 9, 36, tzinfo=UTC),
+                    "open": 70300,
+                    "high": 70400,
+                    "low": 70200,
+                    "close": 70350,
+                    "volume": 2000,
+                },
+                {
+                    "timestamp": datetime(2026, 4, 20, 9, 0, tzinfo=UTC),
+                    "open": 69000,
+                    "high": 69100,
+                    "low": 68900,
+                    "close": 69050,
+                    "volume": 900,
+                },
+            ]
+        }
+
+    provider = KRStrategyDataProvider(intraday_bar_loader=loader, settings=settings)
+
+    history = provider.get_intraday_bars(["005930", "005930"], "KR", as_of, lookback_minutes=30)
+
+    assert list(history) == ["005930"]
+    assert [bar.close for bar in history["005930"]] == [70050.0, 70250.0]
+    assert [bar.volume for bar in history["005930"]] == [1000, 1500]
+    assert all(bar.market == "KR" for bar in history["005930"])
+
+
+def test_kr_strategy_data_provider_reuses_intraday_cache_within_same_minute(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    first_as_of = datetime(2026, 4, 20, 9, 35, 10, tzinfo=UTC)
+    second_as_of = datetime(2026, 4, 20, 9, 35, 50, tzinfo=UTC)
+    calls: list[int] = []
+
+    def loader(tickers, market, requested_as_of, lookback_minutes):
+        calls.append(lookback_minutes)
+        return {
+            "005930": [
+                {
+                    "timestamp": datetime(2026, 4, 20, 9, 20, tzinfo=UTC),
+                    "open": 70000,
+                    "high": 70100,
+                    "low": 69900,
+                    "close": 70050,
+                    "volume": 1000,
+                },
+                {
+                    "timestamp": datetime(2026, 4, 20, 9, 34, tzinfo=UTC),
+                    "open": 70100,
+                    "high": 70200,
+                    "low": 70000,
+                    "close": 70150,
+                    "volume": 1200,
+                },
+            ]
+        }
+
+    provider = KRStrategyDataProvider(intraday_bar_loader=loader, settings=settings)
+
+    first = provider.get_intraday_bars(["005930"], "KR", first_as_of, lookback_minutes=30)
+    second = provider.get_intraday_bars(["005930"], "KR", second_as_of, lookback_minutes=10)
+
+    assert calls == [30]
+    assert [bar.close for bar in first["005930"]] == [70050.0, 70150.0]
+    assert [bar.close for bar in second["005930"]] == [70150.0]
 
 
 def test_kr_strategy_data_provider_reuses_cached_longer_lookback_for_shorter_request(tmp_path) -> None:

@@ -4,7 +4,7 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta, timezone
 from typing import Any
 
-from core.models import EventFlag, EventType, FactorSnapshot, MarketCode, PriceBar
+from core.models import EventFlag, EventType, FactorSnapshot, IntradayBar, MarketCode, PriceBar
 from core.settings import Settings, get_settings
 from data.database import EventCalendar, get_read_session
 from strategy.base import StrategyInputAvailability
@@ -13,6 +13,10 @@ from strategy.base import StrategyInputAvailability
 KST = timezone(timedelta(hours=9))
 
 PriceHistoryLoader = Callable[[list[str], datetime, int], Mapping[str, Sequence[PriceBar | Mapping[str, Any]]]]
+IntradayBarLoader = Callable[
+    [list[str], MarketCode, datetime, int],
+    Mapping[str, Sequence[IntradayBar | Mapping[str, Any]]],
+]
 FactorInputLoader = Callable[[list[str], MarketCode, datetime], Mapping[str, FactorSnapshot | Mapping[str, Any]]]
 
 
@@ -55,6 +59,43 @@ def _coerce_price_bar(ticker: str, market: MarketCode, raw_bar: PriceBar | Mappi
         close=float(close),
         high=float(high) if high is not None else None,
         low=float(low) if low is not None else None,
+    )
+
+
+def _coerce_intraday_bar(
+    ticker: str,
+    market: MarketCode,
+    raw_bar: IntradayBar | Mapping[str, Any],
+) -> IntradayBar:
+    if isinstance(raw_bar, IntradayBar):
+        return IntradayBar(
+            ticker=ticker,
+            market=market,
+            timestamp=_coerce_utc(raw_bar.timestamp),
+            open=float(raw_bar.open),
+            high=float(raw_bar.high),
+            low=float(raw_bar.low),
+            close=float(raw_bar.close),
+            volume=int(raw_bar.volume),
+        )
+
+    timestamp = raw_bar.get("timestamp")
+    if not isinstance(timestamp, datetime):
+        raise ValueError("intraday loader must supply datetime timestamps")
+
+    missing_fields = [field for field in ("open", "high", "low", "close", "volume") if raw_bar.get(field) is None]
+    if missing_fields:
+        raise ValueError("intraday loader must supply OHLCV fields")
+
+    return IntradayBar(
+        ticker=ticker,
+        market=market,
+        timestamp=_coerce_utc(timestamp),
+        open=float(raw_bar["open"]),
+        high=float(raw_bar["high"]),
+        low=float(raw_bar["low"]),
+        close=float(raw_bar["close"]),
+        volume=int(raw_bar["volume"]),
     )
 
 
@@ -119,16 +160,20 @@ class KRStrategyDataProvider:
         self,
         *,
         price_history_loader: PriceHistoryLoader | None = None,
+        intraday_bar_loader: IntradayBarLoader | None = None,
         factor_input_loader: FactorInputLoader | None = None,
         read_session_factory: Callable[[], Any] | None = None,
         settings: Settings | None = None,
     ) -> None:
         self.price_history_loader = price_history_loader
+        self.intraday_bar_loader = intraday_bar_loader
         self.factor_input_loader = factor_input_loader
         self.read_session_factory = read_session_factory or get_read_session
         self.settings = settings or get_settings()
         self._price_history_cache: dict[tuple[str, str, datetime], list[PriceBar]] = {}
         self._price_history_cache_lookback: dict[tuple[str, str, datetime], int] = {}
+        self._intraday_cache: dict[tuple[str, str, datetime], list[IntradayBar]] = {}
+        self._intraday_cache_lookback: dict[tuple[str, str, datetime], int] = {}
 
     def get_price_history(
         self,
@@ -174,6 +219,53 @@ class KRStrategyDataProvider:
                 self._price_history_cache[cache_key] = normalized_bars
                 self._price_history_cache_lookback[cache_key] = lookback_days
                 histories[ticker] = normalized_bars[-lookback_days:]
+        return histories
+
+    def get_intraday_bars(
+        self,
+        tickers: list[str],
+        market: MarketCode,
+        as_of: datetime,
+        lookback_minutes: int,
+    ) -> dict[str, list[IntradayBar]]:
+        if market != "KR" or not tickers or lookback_minutes <= 0:
+            return {}
+        if self.intraday_bar_loader is None:
+            return {}
+
+        unique_tickers = list(dict.fromkeys(tickers))
+        as_of_utc = _coerce_utc(as_of)
+        as_of_minute = as_of_utc.replace(second=0, microsecond=0)
+        window_start = as_of_utc - timedelta(minutes=lookback_minutes)
+        histories: dict[str, list[IntradayBar]] = {}
+        missing_tickers: list[str] = []
+
+        for ticker in unique_tickers:
+            cache_key = (ticker, market, as_of_minute)
+            cached_bars = self._intraday_cache.get(cache_key)
+            cached_lookback = self._intraday_cache_lookback.get(cache_key, 0)
+            if cached_bars is not None and cached_lookback >= lookback_minutes:
+                histories[ticker] = [bar for bar in cached_bars if window_start <= bar.timestamp <= as_of_utc]
+            else:
+                missing_tickers.append(ticker)
+
+        raw_histories = (
+            self.intraday_bar_loader(missing_tickers, market, as_of, lookback_minutes) if missing_tickers else {}
+        )
+
+        for ticker in missing_tickers:
+            raw_bars = raw_histories.get(ticker, [])
+            normalized_bars = []
+            for raw_bar in raw_bars:
+                bar = _coerce_intraday_bar(ticker, market, raw_bar)
+                if window_start <= bar.timestamp <= as_of_utc:
+                    normalized_bars.append(bar)
+            normalized_bars.sort(key=lambda bar: bar.timestamp)
+            if normalized_bars:
+                cache_key = (ticker, market, as_of_minute)
+                self._intraday_cache[cache_key] = normalized_bars
+                self._intraday_cache_lookback[cache_key] = lookback_minutes
+                histories[ticker] = normalized_bars
         return histories
 
     def get_factor_inputs(

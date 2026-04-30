@@ -22,6 +22,9 @@ class FakeStrategyDataProvider:
     def get_price_history(self, tickers, market, as_of, lookback_days):
         return {ticker: self.prices.get(ticker, []) for ticker in tickers}
 
+    def get_intraday_bars(self, tickers, market, as_of, lookback_minutes):
+        return {}
+
     def get_factor_inputs(self, tickers, market, as_of):
         return {ticker: self.factors[ticker] for ticker in tickers if ticker in self.factors}
 
