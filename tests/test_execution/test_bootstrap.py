@@ -394,6 +394,28 @@ def test_kis_client_supplies_domestic_daily_price_query_contract(tmp_path: Path)
     assert call["params"]["FID_ORG_ADJ_PRC"] == "0"
 
 
+def test_kis_client_supplies_domestic_intraday_price_query_contract(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    dummy_session = DummySession({"rt_cd": "0", "output2": []})
+    client = KISApiClient(settings=settings, session=dummy_session)
+
+    client.get_intraday_price_history(
+        "abc",
+        ticker="005930",
+        input_hour="093000",
+    )
+
+    call = dummy_session.calls[0]
+    assert call["url"] == "https://example.test:29443/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice"
+    assert call["headers"]["tr_id"] == "FHKST03010200"
+    assert call["headers"]["custtype"] == "P"
+    assert call["params"]["FID_ETC_CLS_CODE"] == ""
+    assert call["params"]["FID_COND_MRKT_DIV_CODE"] == "J"
+    assert call["params"]["FID_INPUT_ISCD"] == "005930"
+    assert call["params"]["FID_INPUT_HOUR_1"] == "093000"
+    assert call["params"]["FID_PW_DATA_INCU_YN"] == "Y"
+
+
 def test_kis_client_supplies_domestic_submit_order_contract(tmp_path: Path) -> None:
     settings = build_settings(tmp_path)
     dummy_session = DummySession(
@@ -675,6 +697,54 @@ def test_kis_client_normalizes_daily_price_rows(tmp_path: Path) -> None:
     assert result[0]["timestamp"].strftime("%Y%m%d") == "20260417"
     assert result[0]["close"] == 70000.0
     assert result[1]["high"] == 71500.0
+
+
+def test_kis_client_normalizes_intraday_price_rows(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    client = KISApiClient(settings=settings, session=DummySession({"rt_cd": "0"}))
+
+    result = client.normalize_intraday_price_history(
+        {
+            "output2": [
+                {
+                    "stck_bsop_date": "20260420",
+                    "stck_cntg_hour": "093000",
+                    "stck_oprc": "70000",
+                    "stck_hgpr": "70200",
+                    "stck_lwpr": "69900",
+                    "stck_prpr": "70100",
+                    "cntg_vol": "12345",
+                },
+                {
+                    "stck_bsop_date": "20260420",
+                    "stck_cntg_hour": "092900",
+                    "stck_oprc": "69900",
+                    "stck_hgpr": "70050",
+                    "stck_lwpr": "69850",
+                    "stck_prpr": "70000",
+                    "cntg_vol": "10000",
+                },
+                {
+                    "stck_bsop_date": "20260420",
+                    "stck_cntg_hour": "093100",
+                    "stck_prpr": "",
+                },
+            ]
+        },
+        ticker="005930",
+    )
+
+    assert len(result) == 2
+    assert result[0]["ticker"] == "005930"
+    assert result[0]["market"] == "KR"
+    assert result[0]["timestamp"].isoformat() == "2026-04-20T00:29:00+00:00"
+    assert result[0]["open"] == 69900.0
+    assert result[0]["high"] == 70050.0
+    assert result[0]["low"] == 69850.0
+    assert result[0]["close"] == 70000.0
+    assert result[0]["volume"] == 10000
+    assert result[1]["timestamp"].isoformat() == "2026-04-20T00:30:00+00:00"
+    assert result[1]["volume"] == 12345
 
 
 def test_kis_client_normalizes_failed_order_result(tmp_path: Path) -> None:

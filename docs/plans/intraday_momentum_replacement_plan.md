@@ -228,6 +228,16 @@ auto_trading:
 
 ### Task 3. KIS 분봉 조회 adapter 구현
 
+상태: `done` (`2026-04-30`)
+
+완료 메모:
+
+- `KISApiClient.get_intraday_price_history()`를 추가해 국내 분봉 조회 endpoint `/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice`를 호출한다.
+- 국내 분봉 TR ID는 `FHKST03010200`으로 고정했다.
+- `normalize_intraday_price_history()`를 추가해 KIS raw row를 `IntradayBar` compatible mapping으로 정규화한다.
+- KIS 국내 date/time field는 KST로 해석한 뒤 UTC `datetime`으로 변환한다.
+- raw payload parsing은 `execution/kis_api.py` adapter 내부에만 둔다.
+
 완료 기준:
 
 - KIS 국내 분봉 raw 응답을 `IntradayBar` compatible rows로 정규화할 수 있다.

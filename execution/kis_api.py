@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 import requests
@@ -10,6 +10,9 @@ import requests
 from core.exceptions import AuthenticationError, BrokerApiError
 from core.models import BrokerFillSnapshot, BrokerOrderResult, BrokerOrderSnapshot, BrokerPollingSnapshot, BrokerPositionSnapshot
 from core.settings import RuntimeEnv, Settings, get_settings
+
+
+KST = timezone(timedelta(hours=9))
 
 
 def _mask_secret(value: str | None) -> str:
@@ -243,6 +246,26 @@ class KISApiClient:
                 adjusted_price=adjusted_price,
             ),
             headers={"tr_id": self._domestic_daily_price_tr_id(), "custtype": "P"},
+            access_token=access_token,
+        )
+
+    def get_intraday_price_history(
+        self,
+        access_token: str,
+        *,
+        ticker: str,
+        input_hour: str,
+        include_past_data: bool = True,
+    ) -> dict[str, Any]:
+        return self.request(
+            "GET",
+            "/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice",
+            params=self._domestic_intraday_price_params(
+                ticker=ticker,
+                input_hour=input_hour,
+                include_past_data=include_past_data,
+            ),
+            headers={"tr_id": self._domestic_intraday_price_tr_id(), "custtype": "P"},
             access_token=access_token,
         )
 
@@ -488,6 +511,48 @@ class KISApiClient:
         normalized.sort(key=lambda row: row["timestamp"])
         return normalized
 
+    def normalize_intraday_price_history(
+        self,
+        payload: dict[str, Any],
+        *,
+        ticker: str,
+        default_market: str = "KR",
+    ) -> list[dict[str, Any]]:
+        rows = payload.get("output2") or payload.get("output1") or payload.get("output") or []
+        normalized: list[dict[str, Any]] = []
+        for row in rows:
+            trade_date = row.get("stck_bsop_date") or row.get("STCK_BSOP_DATE") or row.get("date")
+            trade_time = (
+                row.get("stck_cntg_hour")
+                or row.get("STCK_CNTG_HOUR")
+                or row.get("cntg_hour")
+                or row.get("time")
+            )
+            close = row.get("stck_prpr") or row.get("STCK_PRPR") or row.get("close")
+            open_price = row.get("stck_oprc") or row.get("STCK_OPRC") or row.get("open")
+            high = row.get("stck_hgpr") or row.get("STCK_HGPR") or row.get("high")
+            low = row.get("stck_lwpr") or row.get("STCK_LWPR") or row.get("low")
+            volume = row.get("cntg_vol") or row.get("CNTG_VOL") or row.get("acml_vol") or row.get("volume")
+            if trade_date in (None, "") or trade_time in (None, ""):
+                continue
+            if any(value in (None, "") for value in (open_price, high, low, close, volume)):
+                continue
+            timestamp = self._domestic_intraday_timestamp_to_utc(str(trade_date), str(trade_time))
+            normalized.append(
+                {
+                    "ticker": ticker,
+                    "market": self._normalize_market(default_market, default_market=default_market),
+                    "timestamp": timestamp,
+                    "open": float(open_price),
+                    "high": float(high),
+                    "low": float(low),
+                    "close": float(close),
+                    "volume": int(float(volume)),
+                }
+            )
+        normalized.sort(key=lambda row: row["timestamp"])
+        return normalized
+
     def build_polling_snapshot(
         self,
         *,
@@ -622,6 +687,25 @@ class KISApiClient:
             "FID_ORG_ADJ_PRC": "1" if adjusted_price else "0",
         }
 
+    def _domestic_intraday_price_params(
+        self,
+        *,
+        ticker: str,
+        input_hour: str,
+        include_past_data: bool,
+    ) -> dict[str, str]:
+        if not ticker:
+            raise BrokerApiError("domestic intraday price inquiry requires ticker")
+        if not input_hour:
+            raise BrokerApiError("domestic intraday price inquiry requires input_hour")
+        return {
+            "FID_ETC_CLS_CODE": "",
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": str(ticker),
+            "FID_INPUT_HOUR_1": str(input_hour),
+            "FID_PW_DATA_INCU_YN": "Y" if include_past_data else "N",
+        }
+
     def _domestic_order_payload(self, payload: dict[str, Any]) -> dict[str, str]:
         ticker = payload.get("PDNO") or payload.get("ticker")
         quantity = payload.get("ORD_QTY") if "ORD_QTY" in payload else payload.get("quantity")
@@ -740,6 +824,9 @@ class KISApiClient:
     def _domestic_daily_price_tr_id(self) -> str:
         return "FHKST03010100"
 
+    def _domestic_intraday_price_tr_id(self) -> str:
+        return "FHKST03010200"
+
     def _is_vts_domestic_open_orders_unsupported(self, exc: BrokerApiError) -> bool:
         if self.env != RuntimeEnv.VTS:
             return False
@@ -765,6 +852,12 @@ class KISApiClient:
         trade_date = str(date_value)
         trade_time = (str(time_value or "000000") + "000000")[:6]
         return datetime.strptime(f"{trade_date}{trade_time}", "%Y%m%d%H%M%S").replace(tzinfo=UTC)
+
+    @staticmethod
+    def _domestic_intraday_timestamp_to_utc(trade_date: str, trade_time: str) -> datetime:
+        normalized_time = (trade_time + "000000")[:6]
+        kst_timestamp = datetime.strptime(f"{trade_date}{normalized_time}", "%Y%m%d%H%M%S").replace(tzinfo=KST)
+        return kst_timestamp.astimezone(UTC)
 
 
 def time_to_utc_now():
