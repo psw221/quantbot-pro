@@ -257,6 +257,16 @@ auto_trading:
 
 ### Task 4. 후보군 축소 loader 구현
 
+상태: `done` (`2026-04-30`)
+
+완료 메모:
+
+- `data.collector.build_kr_intraday_candidate_loader()`를 추가해 KOSPI200 universe 중 거래대금 상위 N개와 현재 KR 보유 종목을 후보군으로 반환한다.
+- `rank_tickers_by_turnover()`를 추가해 거래대금 내림차순, 기존 universe 순서 tie-break로 안정적인 ranking을 제공한다.
+- `build_pykrx_kr_previous_turnover_loader()`를 추가해 pykrx가 있을 때 최근 가용 거래일의 `거래대금`을 ranking input으로 사용한다.
+- 거래대금 데이터가 없거나 loader가 실패하면 universe/cache 순서의 상위 N개와 보유 종목으로 fallback한다.
+- 후보군 loader는 아직 strategy/runtime에 강제 연결하지 않고, `intraday_momentum` 전략 연결 단계에서 주입하도록 남긴다.
+
 완료 기준:
 
 - KOSPI200 전체 중 유동성 상위 50개와 보유 종목만 intraday 조회 대상으로 선택된다.
@@ -275,6 +285,17 @@ auto_trading:
 - 보유 종목 포함 테스트
 
 ### Task 5. `IntradayMomentumStrategy` 구현
+
+상태: `done` (`2026-04-30`)
+
+완료 메모:
+
+- `strategy.intraday_momentum.IntradayMomentumStrategy`를 추가해 `BaseStrategy` 기반의 KR 전용 Opening Range + VWAP breakout 전략을 구현했다.
+- opening range, VWAP, volume ratio 계산을 strategy-local 순수 함수로 분리했다.
+- 09:30 이전과 15:10 이후 신규 진입을 차단하고, 15:15 이후 보유 포지션 강제 청산 신호를 생성한다.
+- 장중 stop-loss/trailing stop은 `IntradayMomentumSettings`의 보수적 전략별 기준을 사용한다.
+- 당일 종목별 진입 횟수 제한은 `entry_history_loader(ticker, trading_day)` 주입 표면으로 반영했으며, 실제 DB read wiring은 Task 6/7에서 연결한다.
+- 데이터 부족, opening range 미완성, VWAP 계산 불가, 거래량 증가 미충족 시 신호를 생성하지 않는다.
 
 완료 기준:
 

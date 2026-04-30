@@ -10,8 +10,11 @@ from data.collector import (
     build_cached_kr_index_ticker_loader,
     build_default_kr_factor_input_loader,
     build_default_kr_universe_loader,
+    build_kr_intraday_candidate_loader,
     build_kis_kr_price_history_loader,
+    build_pykrx_kr_previous_turnover_loader,
     build_pykrx_price_history_loader,
+    rank_tickers_by_turnover,
 )
 from data.database import Position, get_session_factory, init_db, utc_now
 from main import build_strategy_cycle_runner
@@ -109,6 +112,126 @@ def test_cached_kr_index_ticker_loader_reads_static_kospi200_cache(tmp_path) -> 
     loader = build_cached_kr_index_ticker_loader(cache_path=cache_path)
 
     assert loader() == ["005930", "000660"]
+
+
+def test_rank_tickers_by_turnover_keeps_stable_order_for_ties() -> None:
+    ranked = rank_tickers_by_turnover(
+        ["AAA", "BBB", "CCC", "DDD"],
+        {"AAA": 1000, "BBB": 3000, "CCC": 3000, "DDD": 0},
+        top_n=3,
+    )
+
+    assert ranked == ["BBB", "CCC", "AAA"]
+
+
+def test_intraday_candidate_loader_uses_turnover_top_n_and_includes_positions(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    init_db(settings)
+    session_factory = get_session_factory()
+
+    with session_factory() as session:
+        session.add(
+            Position(
+                ticker="251340",
+                market="KR",
+                strategy="intraday_momentum",
+                quantity=3,
+                avg_cost=12000,
+                current_price=12100,
+                highest_price=12200,
+                entry_date=datetime(2026, 4, 1, tzinfo=UTC),
+                updated_at=utc_now(),
+            )
+        )
+        session.commit()
+
+    loader = build_kr_intraday_candidate_loader(
+        universe_loader=lambda market, as_of: ["005930", "000660", "035420", "207940"],
+        turnover_loader=lambda tickers, as_of: {
+            "005930": 100,
+            "000660": 400,
+            "035420": 300,
+            "207940": 200,
+        },
+        read_session_factory=session_factory,
+        top_n=2,
+    )
+
+    candidates = loader("KR", datetime(2026, 4, 20, tzinfo=UTC))
+
+    assert candidates == ["000660", "035420", "251340"]
+
+
+def test_intraday_candidate_loader_falls_back_to_universe_order_when_turnover_missing(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    init_db(settings)
+    session_factory = get_session_factory()
+
+    with session_factory() as session:
+        session.add(
+            Position(
+                ticker="251340",
+                market="KR",
+                strategy="trend_following",
+                quantity=1,
+                avg_cost=12000,
+                current_price=12100,
+                highest_price=12200,
+                entry_date=datetime(2026, 4, 1, tzinfo=UTC),
+                updated_at=utc_now(),
+            )
+        )
+        session.commit()
+
+    loader = build_kr_intraday_candidate_loader(
+        universe_loader=lambda market, as_of: ["005930", "000660", "035420"],
+        turnover_loader=lambda tickers, as_of: {},
+        read_session_factory=session_factory,
+        top_n=2,
+    )
+
+    candidates = loader("KR", datetime(2026, 4, 20, tzinfo=UTC))
+
+    assert candidates == ["005930", "000660", "251340"]
+
+
+def test_pykrx_previous_turnover_loader_reads_latest_available_turnover(monkeypatch) -> None:
+    class EmptyFrame:
+        empty = True
+
+    class FakeLoc:
+        def __getitem__(self, ticker):
+            rows = {
+                "005930": {"거래대금": 1000},
+                "000660": {"거래대금": 2000},
+            }
+            return rows[ticker]
+
+    class FakeFrame:
+        empty = False
+        loc = FakeLoc()
+
+    calls: list[str] = []
+
+    def get_market_ohlcv_by_ticker(date: str, market: str):
+        calls.append(date)
+        assert market == "KOSPI"
+        if len(calls) == 1:
+            return EmptyFrame()
+        return FakeFrame()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "pykrx",
+        SimpleNamespace(stock=SimpleNamespace(get_market_ohlcv_by_ticker=get_market_ohlcv_by_ticker)),
+    )
+
+    loader = build_pykrx_kr_previous_turnover_loader()
+
+    turnovers = loader(["005930", "000660", "035420"], datetime(2026, 4, 20, tzinfo=UTC))
+
+    assert calls == ["20260419", "20260418"]
+    assert turnovers == {"005930": 1000.0, "000660": 2000.0}
 
 
 def test_pykrx_price_history_loader_normalizes_rows(monkeypatch) -> None:

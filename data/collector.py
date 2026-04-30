@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 import json
 from pathlib import Path
@@ -19,6 +19,8 @@ DEFAULT_KR_AUTO_TRADING_UNIVERSE = (
     "000660",  # SK hynix
     "035420",  # NAVER
 )
+
+TurnoverLoader = Callable[[list[str], datetime], Mapping[str, float]]
 
 
 def build_default_kr_universe_loader(
@@ -55,6 +57,123 @@ def build_default_kr_universe_loader(
     return loader
 
 
+def build_kr_intraday_candidate_loader(
+    *,
+    universe_loader: Callable[[str, datetime], list[str]] | None = None,
+    turnover_loader: TurnoverLoader | None = None,
+    read_session_factory: Callable[[], Any] | None = None,
+    top_n: int | None = None,
+    settings: Any | None = None,
+) -> Callable[[str, datetime], list[str]]:
+    session_factory = read_session_factory or get_read_session
+    resolved_universe_loader = universe_loader or build_default_kr_universe_loader(
+        read_session_factory=session_factory,
+    )
+    resolved_turnover_loader = turnover_loader or build_pykrx_kr_previous_turnover_loader()
+    candidate_top_n = top_n
+    if candidate_top_n is None and settings is not None:
+        candidate_top_n = int(settings.strategies.intraday_momentum.candidate_top_n_by_turnover)
+    if candidate_top_n is None:
+        candidate_top_n = 50
+
+    def loader(market: str, as_of: datetime) -> list[str]:
+        if market.upper() != "KR" or candidate_top_n <= 0:
+            return []
+
+        universe = _normalize_tickers(resolved_universe_loader("KR", as_of))
+        held_tickers = _load_active_kr_position_tickers(session_factory)
+        if not universe:
+            universe = list(DEFAULT_KR_AUTO_TRADING_UNIVERSE)
+
+        turnover_by_ticker: Mapping[str, float] = {}
+        try:
+            turnover_by_ticker = resolved_turnover_loader(universe, as_of)
+        except Exception:
+            turnover_by_ticker = {}
+
+        ranked_candidates = rank_tickers_by_turnover(
+            universe,
+            turnover_by_ticker,
+            top_n=candidate_top_n,
+        )
+        if not ranked_candidates:
+            ranked_candidates = universe[:candidate_top_n]
+        return list(dict.fromkeys([*ranked_candidates, *held_tickers]))
+
+    return loader
+
+
+def rank_tickers_by_turnover(
+    universe: list[str],
+    turnover_by_ticker: Mapping[str, float],
+    *,
+    top_n: int,
+) -> list[str]:
+    if top_n <= 0:
+        return []
+
+    normalized_universe = _normalize_tickers(universe)
+    order = {ticker: index for index, ticker in enumerate(normalized_universe)}
+    ranked_rows: list[tuple[str, float]] = []
+    for ticker in normalized_universe:
+        raw_turnover = turnover_by_ticker.get(ticker)
+        if raw_turnover is None:
+            continue
+        try:
+            turnover = float(raw_turnover)
+        except (TypeError, ValueError):
+            continue
+        if turnover <= 0:
+            continue
+        ranked_rows.append((ticker, turnover))
+
+    ranked_rows.sort(key=lambda item: (-item[1], order[item[0]]))
+    return [ticker for ticker, _ in ranked_rows[:top_n]]
+
+
+def build_pykrx_kr_previous_turnover_loader(
+    *,
+    lookback_days: int = 10,
+) -> TurnoverLoader:
+    def loader(tickers: list[str], as_of: datetime) -> Mapping[str, float]:
+        normalized_tickers = _normalize_tickers(tickers)
+        if not normalized_tickers:
+            return {}
+
+        try:
+            from pykrx import stock  # type: ignore
+        except Exception:
+            return {}
+
+        requested_as_of = _coerce_utc(as_of)
+        for days_back in range(1, max(lookback_days, 1) + 1):
+            target_date = (requested_as_of - timedelta(days=days_back)).strftime("%Y%m%d")
+            try:
+                frame = stock.get_market_ohlcv_by_ticker(target_date, market="KOSPI")
+            except Exception:
+                continue
+            if frame is None or frame.empty:
+                continue
+
+            turnovers: dict[str, float] = {}
+            for ticker in normalized_tickers:
+                try:
+                    raw_value = frame.loc[ticker]["거래대금"]
+                except Exception:
+                    continue
+                try:
+                    turnover = float(raw_value)
+                except (TypeError, ValueError):
+                    continue
+                if turnover > 0:
+                    turnovers[ticker] = turnover
+            if turnovers:
+                return turnovers
+        return {}
+
+    return loader
+
+
 def build_pykrx_kr_index_ticker_loader(
     *,
     index_ticker: str = KOSPI200_INDEX_TICKER,
@@ -79,6 +198,31 @@ def build_pykrx_kr_index_ticker_loader(
         ]
 
     return loader
+
+
+def _load_active_kr_position_tickers(session_factory: Callable[[], Any]) -> list[str]:
+    with session_factory() as session:
+        rows = list(
+            session.query(Position.ticker)
+            .filter(
+                Position.market == "KR",
+                Position.quantity > 0,
+            )
+            .distinct()
+            .all()
+        )
+    return _normalize_tickers([row[0] for row in rows])
+
+
+def _normalize_tickers(tickers: list[str]) -> list[str]:
+    normalized: list[str] = []
+    for raw_ticker in tickers:
+        if not isinstance(raw_ticker, str):
+            continue
+        ticker = raw_ticker.strip().upper()
+        if ticker:
+            normalized.append(ticker)
+    return list(dict.fromkeys(normalized))
 
 
 def build_cached_kr_index_ticker_loader(
